@@ -1,4 +1,4 @@
-module Kdl exposing (LocatedNode, LocatedValue, Node(..), Position, SourceRange, Value(..))
+module Kdl exposing (LocatedNode, Node(..), Position, SourceRange, Value(..))
 
 import Dict exposing (Dict)
 import BigRational exposing (BigRational)
@@ -6,8 +6,8 @@ import BigRational exposing (BigRational)
 type Node l v =
     Node
         String {- Name -}
-        (List v) {- Args -}
-        (Dict String v) {- props -}
+        (List (l, v)) {- Args -}
+        (Dict String (l, v)) {- props -}
         (List (Node l v)) {- children -}
         l
 
@@ -21,6 +21,4 @@ type alias Position = (Int {- LineNo -}, Int {- Col -})
 
 type alias SourceRange = (Position {- First Character -}, Position {- Last Character -})
 
-type alias LocatedValue = (SourceRange, Value)
-
-type alias LocatedNode = Node SourceRange LocatedValue
+type alias LocatedNode = Node SourceRange Value

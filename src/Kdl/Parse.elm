@@ -1,6 +1,7 @@
 module Kdl.Parse exposing (parse, ParseProblem(..))
 
-import Kdl exposing (Node(..), Value(..), LocatedNode, LocatedValue, Position, SourceRange)
+import Kdl exposing (Node(..), Value(..), LocatedNode, Position, SourceRange)
+import Kdl.Shared exposing (identifierCharacter, initialCharacter, unicodeNewline, unicodeSpace)
 import Kdl.Util exposing (andf, flip, k, maybe, orf, parseRadix)
 
 import BigInt exposing (BigInt)
@@ -45,8 +46,8 @@ type TypeableThing
     | TArgument
 
 type PropOrArg
-    = Prop String LocatedValue
-    | Arg LocatedValue
+    = Prop String (SourceRange, Value)
+    | Arg (SourceRange, Value)
 
 type Context
     = WithinNode
@@ -323,10 +324,10 @@ parseBool = oneOf
 parseBoolVal : Parser c Problem Value
 parseBoolVal = Parser.map BoolVal parseBool
 
-mkLocVal : Position -> Value -> Position -> LocatedValue
+mkLocVal : Position -> Value -> Position -> (SourceRange, Value)
 mkLocVal s v e = ((s, e), v)
 
-parseValue : Parser Context Problem LocatedValue
+parseValue : Parser Context Problem (SourceRange, Value)
 parseValue =
     succeed mkLocVal
     |= getPosition
@@ -339,16 +340,6 @@ parseValue =
     ]
     |= getPosition
     |> inContext WithinValue
-
-identifierCharacter : Char -> Bool
-identifierCharacter c =
-    let
-        code = Char.toCode c
-        bannedChars = ['\\', '/', '(', ')', '{', '}', '<', '>', ';', '[', ']', '=', ',', '"']
-    in code > 0x20 && code <= 0x10FFFF && (not <| member c bannedChars)
-
-initialCharacter : Char -> Bool
-initialCharacter = andf (not << isDigit) identifierCharacter
 
 signChar : Char -> Bool
 signChar = flip member ['+', '-']
@@ -432,39 +423,6 @@ parseLineComment =
     |. chompUntilEndOr "\n"
     |. (optional () <| chompIf ((==) '\n') (PExpecting "linecomment newline"))
     |> inContext WithinComment
-
-unicodeSpace : Char -> Bool
-unicodeSpace = Char.toCode >> flip member
-    [ 0x0009
-    , 0x0020
-    , 0x00A0
-    , 0x1680
-    , 0x2000
-    , 0x2001
-    , 0x2002
-    , 0x2003
-    , 0x2004
-    , 0x2005
-    , 0x2006
-    , 0x2007
-    , 0x2008
-    , 0x2009
-    , 0x200A
-    , 0x202F
-    , 0x205F
-    , 0x3000
-    , 0xFEFF -- BOM
-    ]
-
-unicodeNewline : Char -> Bool
-unicodeNewline = Char.toCode >> flip member
-    [ 0x000D
-    , 0x000A
-    , 0x0085
-    , 0x000C
-    , 0x2028
-    , 0x2029
-    ]
 
 ws : Parser Context Problem ()
 ws =
