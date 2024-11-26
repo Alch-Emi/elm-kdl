@@ -208,18 +208,13 @@ parseDigits : (Char -> Bool) -> Parser c Problem String
 parseDigits isDigitValid =
     let
         parseDigitSeries =
-            chompIf isDigitValid PMalformedNumber
-            |. chompWhile isDigitValid
-            |> getChompedString
-    in
-        succeed (++)
-            |= parseDigitSeries
-            |= star (++) ""
-                (
-                    succeed identity
-                    |. symbol (Token "_" <| PExpecting "underscore")
-                    |= parseDigitSeries
-                )
+            (
+                chompIf isDigitValid PMalformedNumber
+                |. chompWhile isDigitValid
+                |> getChompedString
+            )
+            |. (symbol (Token "_" <| PExpecting "underscore") |> optional ())
+    in plus (++) "" parseDigitSeries
 
 parseUnsignedRadixNumber : Parser Context Problem BigInt
 parseUnsignedRadixNumber =
