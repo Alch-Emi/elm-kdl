@@ -220,7 +220,7 @@ serializeNode : Node l ValueContents -> Lines
 serializeNode (Node name typ args props children _) = 
     let
         serializedType = serializeType typ
-        serializedName = serializeIdent name
+        serializedName = concatBags [serializedType, serializeIdent name]
         serializedArgs = concatSepBags spaceB <| List.map serializeVal args
         serializedProps = Dict.toList props
             |> List.sortBy Tuple.first
@@ -230,11 +230,11 @@ serializeNode (Node name typ args props children _) =
             |> concatBags
     in if List.length children > 0
         then concatBags
-            [ singletonBag <| concatSepBags spaceB [serializedType, serializedName, serializedArgs, serializedProps, ocurlB]
+            [ singletonBag <| concatSepBags spaceB [serializedName, serializedArgs, serializedProps, ocurlB]
             , indent serializedChildren
             , singletonBag ccurlB
             ]
-        else singletonBag <| concatSepBags spaceB [serializedType, serializedName, serializedArgs, serializedProps]
+        else singletonBag <| concatSepBags spaceB [serializedName, serializedArgs, serializedProps]
 
 serializeDocument : List (Node l ValueContents) -> Lines
 serializeDocument = List.map serializeNode >> concatBags
