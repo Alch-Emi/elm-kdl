@@ -52,6 +52,9 @@ mapBag f b = case b of
     Leaf v -> Leaf (f v)
     Bunch bs -> Bunch <| List.map (mapBag f) bs
 
+anyBag : (t -> Bool) -> Bag t -> Bool
+anyBag f = mapBag f >> foldrBag (||) False
+
 -------------------------------------------------------
 
 type alias Line = Bag String
@@ -228,13 +231,16 @@ serializeNode (Node name typ args props children _) =
             |> concatSepBags spaceB
         serializedChildren = List.map serializeNode children
             |> concatBags
+        components = [serializedName, serializedArgs, serializedProps]
+            |> List.filter (anyBag (not << String.isEmpty))
+            |> concatSepBags spaceB
     in if List.length children > 0
         then concatBags
-            [ singletonBag <| concatSepBags spaceB [serializedName, serializedArgs, serializedProps, ocurlB]
+            [ singletonBag <| concatSepBags spaceB [components, ocurlB]
             , indent serializedChildren
             , singletonBag ccurlB
             ]
-        else singletonBag <| concatSepBags spaceB [serializedName, serializedArgs, serializedProps]
+        else singletonBag components
 
 serializeDocument : List (Node l ValueContents) -> Lines
 serializeDocument = List.map serializeNode >> concatBags
