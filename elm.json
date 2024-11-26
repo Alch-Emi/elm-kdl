@@ -1,0 +1,19 @@
+{
+    "type": "package",
+    "name": "alch-emi/kdl",
+    "summary": "Parser & pretty printer for the KDL document language",
+    "license": "MIT",
+    "version": "1.0.0",
+    "exposed-modules": [
+        "Kdl",
+        "Kdl.Parse"
+    ],
+    "elm-version": "0.19.0 <= v < 0.20.0",
+    "dependencies": {
+        "cmditch/elm-bigint": "2.0.1 <= v < 3.0.0",
+        "elm/core": "1.0.0 <= v < 2.0.0",
+        "elm/parser": "1.1.0 <= v < 2.0.0",
+        "nunntom/elm-bigrational": "1.0.0 <= v < 2.0.0"
+    },
+    "test-dependencies": {}
+}
