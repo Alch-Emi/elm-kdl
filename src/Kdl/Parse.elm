@@ -1,6 +1,6 @@
 module Kdl.Parse exposing (parse, ParseProblem(..))
 
-import Kdl exposing (Node(..), Value(..), LocatedNode, Position, SourceRange)
+import Kdl exposing (Node(..), Value, ValueContents(..), LocatedNode, LocatedValue, Position, SourceRange)
 import Kdl.Shared exposing (identifierCharacter, initialCharacter, unicodeNewline, unicodeSpace)
 import Kdl.Util exposing (andf, flip, k, maybe, orf, parseRadix)
 
@@ -46,8 +46,8 @@ type TypeableThing
     | TArgument
 
 type PropOrArg
-    = Prop String (SourceRange, Value)
-    | Arg (SourceRange, Value)
+    = Prop String LocatedValue
+    | Arg LocatedValue
 
 type Context
     = WithinNode
@@ -104,7 +104,7 @@ lookAhead1 succeedOnEof prob pred =
         |= getOffset
         |> Parser.andThen identity
 
-parseNullVal : Parser c Problem Value
+parseNullVal : Parser c Problem ValueContents
 parseNullVal =
     succeed NullVal
     |. keyword (Token "null" <| PExpecting "null")
@@ -201,7 +201,7 @@ parseString = oneOf
     , parseRawString
     ]
 
-parseStringVal : Parser Context Problem Value
+parseStringVal : Parser Context Problem ValueContents
 parseStringVal = parseString |> Parser.map StringVal
 
 parseDigits : (Char -> Bool) -> Parser c Problem String
@@ -312,7 +312,7 @@ parseNumber =
         |. lookAhead1 True PMalformedNumber (not << identifierCharacter)
     |> inContext WithinNumber
 
-parseNumberVal : Parser Context Problem Value
+parseNumberVal : Parser Context Problem ValueContents
 parseNumberVal = Parser.map NumberVal parseNumber
 
 parseBool : Parser c Problem Bool
@@ -321,17 +321,17 @@ parseBool = oneOf
     , succeed False |. symbol (Token "false" <| PExpecting "false")
     ]
 
-parseBoolVal : Parser c Problem Value
+parseBoolVal : Parser c Problem ValueContents
 parseBoolVal = Parser.map BoolVal parseBool
 
-mkLocVal : Position -> Value -> Position -> (SourceRange, Value)
-mkLocVal s v e = ((s, e), v)
+mkLocVal : Position -> Maybe String -> ValueContents -> Position -> LocatedValue
+mkLocVal s t v e = Value (s, e) t v
 
-parseValue : Parser Context Problem (SourceRange, Value)
+parseValue : Parser Context Problem LocatedValue
 parseValue =
     succeed mkLocVal
     |= getPosition
-    |. optional "" parseType
+    |= optional Nothing (Parser.map Just parseType)
     |= oneOf
     [ parseStringVal
     , parseNumberVal
@@ -464,7 +464,7 @@ mkNode
     -> List LocatedNode {- children -}
     -> (Int, Int)
     -> LocatedNode
-mkNode startLoc (_, name) propsAndArgs children endLoc =
+mkNode startLoc (typ, name) propsAndArgs children endLoc =
     let
         props = Dict.fromList <| List.filterMap
             (\pov -> 
@@ -477,7 +477,7 @@ mkNode startLoc (_, name) propsAndArgs children endLoc =
                 Arg v -> Just v
                 _ -> Nothing
             ) propsAndArgs
-    in Node name args props children (startLoc, endLoc)
+    in Node name typ args props children (startLoc, endLoc)
 
 parseNode : Parser Context Problem (Maybe LocatedNode)
 parseNode =

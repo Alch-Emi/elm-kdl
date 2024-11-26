@@ -1,8 +1,8 @@
 module Kdl.Serialize exposing (..)
 
-import Kdl exposing (Node(..), Value(..))
+import Kdl exposing (Node(..), Value, ValueContents(..))
 import Kdl.Shared exposing (identifierCharacter, initialCharacter)
-import Kdl.Util exposing (flip)
+import Kdl.Util exposing (flip, maybe)
 
 import BigInt
 import BigRational exposing (BigRational)
@@ -124,6 +124,12 @@ ocurlB = singletonBag "{"
 ccurlB : Bag String
 ccurlB = singletonBag "}"
 
+oparenB : Bag String
+oparenB = singletonBag "("
+
+cparenB : Bag String
+cparenB = singletonBag ")"
+
 serializeStrVal : String -> Line
 serializeStrVal s = concatBags [quoteB, strEscape s, quoteB]
 
@@ -170,12 +176,25 @@ serializeBoolVal v = singletonBag <| if v then "true" else "false"
 serializeNullVal : Bag String
 serializeNullVal = singletonBag "null"
 
-serializeVal : Value -> Line
-serializeVal v = case v of
-    StringVal s -> serializeStrVal s
-    NumberVal n -> serializeNumberVal n
-    BoolVal b -> serializeBoolVal b
-    NullVal -> serializeNullVal
+serializeType : Maybe String -> Line
+serializeType t_ = case t_ of
+    Just t -> concatBags
+        [ oparenB
+        , serializeIdent t
+        , cparenB
+        ]
+    Nothing -> emptyBag
+
+serializeVal : Value l ValueContents -> Line
+serializeVal {typestr, contents} =
+    let
+        typeSerialized = serializeType typestr
+        contentsSerialized = case contents of
+            StringVal s -> serializeStrVal s
+            NumberVal n -> serializeNumberVal n
+            BoolVal b -> serializeBoolVal b
+            NullVal -> serializeNullVal
+    in concatBags [typeSerialized, contentsSerialized]
 
 serializeIdent : String -> Line
 serializeIdent v =
@@ -190,18 +209,19 @@ serializeIdent v =
                 else canSerializeAux i
     in if canSerializeBare v then v |> singletonBag else serializeStrVal v
 
-serializeProp : (String, (a, Value)) -> Line
-serializeProp (k, (_, v)) = concatBags
+serializeProp : (String, Value l ValueContents) -> Line
+serializeProp (k, v) = concatBags
     [ serializeIdent k
     , eqB
     , serializeVal v
     ]
 
-serializeNode : Node l Value -> Lines
-serializeNode (Node name args props children _) = 
+serializeNode : Node l ValueContents -> Lines
+serializeNode (Node name typ args props children _) = 
     let
+        serializedType = serializeType typ
         serializedName = serializeIdent name
-        serializedArgs = concatSepBags spaceB <| List.map (Tuple.second >> serializeVal) args
+        serializedArgs = concatSepBags spaceB <| List.map serializeVal args
         serializedProps = Dict.toList props
             |> List.sortBy Tuple.first
             |> List.map serializeProp
@@ -210,14 +230,14 @@ serializeNode (Node name args props children _) =
             |> concatBags
     in if List.length children > 0
         then concatBags
-            [ singletonBag <| concatSepBags spaceB [serializedName, serializedArgs, serializedProps, ocurlB]
+            [ singletonBag <| concatSepBags spaceB [serializedType, serializedName, serializedArgs, serializedProps, ocurlB]
             , indent serializedChildren
             , singletonBag ccurlB
             ]
-        else singletonBag <| concatSepBags spaceB [serializedName, serializedArgs, serializedProps]
+        else singletonBag <| concatSepBags spaceB [serializedType, serializedName, serializedArgs, serializedProps]
 
-serializeDocument : List (Node l Value) -> Lines
+serializeDocument : List (Node l ValueContents) -> Lines
 serializeDocument = List.map serializeNode >> concatBags
 
-serialize : List (Node l Value) -> String
+serialize : List (Node l ValueContents) -> String
 serialize = serializeDocument >> linesToString
