@@ -373,7 +373,7 @@ parseBareIdentifier possibleFollowingCharacters = oneOf
 
 parseIdentifier : List Char -> Parser Context Problem String
 parseIdentifier possibleFollowingCharacters =
-    oneOf [parseBareIdentifier possibleFollowingCharacters, parseRawString, parseString]
+    oneOf [parseRawString, parseBareIdentifier possibleFollowingCharacters, parseString]
         |> inContext WithinIdentifier
 
 parsePropOrArg : Parser Context Problem PropOrArg
