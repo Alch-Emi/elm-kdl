@@ -127,8 +127,8 @@ viewTest (testName, result) = pair testName <|
                         testSuccess = expectedResult == (Result.toMaybe actualResult)
                     in
                         [ summary []
-                            [ text testName
-                            , text (if testSuccess then "✓" else "✗")
+                            [ text (if testSuccess then "✓" else "✗")
+                            , text testName
                             ]
                         , viewPanel "Input Data" inputData
                         , viewPanel "Expected Result" expectedResultString
@@ -136,8 +136,8 @@ viewTest (testName, result) = pair testName <|
                         ]
                 Nothing ->
                         [ summary []
-                            [ text testName
-                            , text "⋯"
+                            [ text "⋯"
+                            , text testName
                             ]
                         ]
         )
