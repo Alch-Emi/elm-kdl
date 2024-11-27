@@ -258,11 +258,17 @@ parseUnsignedDecimalNumber =
             succeed identity
             |. symbol (Token "." <| PExpecting "decimal part")
             |= (
-                parseUnsignedDecimalInteger
-                |> mapChompedString (\s n ->
-                    BigRational.div
-                        (BigRational.fromInt n)
-                        (BigRational.pow (String.length s) (BigRational.fromInt 10))
+                parseDigits isDigit
+                |> Parser.andThen (\s ->
+                    let
+                        n = String.toInt s
+                    in
+                        case n of
+                            Nothing -> problem <| PExpecting "bad digit?!"
+                            Just n_ -> succeed <|
+                                BigRational.div
+                                    (BigRational.fromInt n_)
+                                    (BigRational.pow (String.length s) (BigRational.fromInt 10))
                 )
             )
             |> optional (BigRational.fromInt 0)
