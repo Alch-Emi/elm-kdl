@@ -132,7 +132,7 @@ parseEscapeCode c = case c of
                         then problem PUnicodeEscapeEmpty
                     else if String.length s > 6
                         then problem PUnicodeEscapeTooLong
-                        else case parseRadix 16 s of
+                        else case parseRadix 16 (String.toLower s) of
                             Just n -> succeed (String.fromList [Char.fromCode <| withDefault 0 <| String.toInt <| BigInt.toString n])
                             Nothing -> problem PUnicodeEscapeInvalidCharacters
                 )
