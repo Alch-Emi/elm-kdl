@@ -7,7 +7,7 @@ import Html.Attributes exposing (style)
 import Html.Events exposing (onInput)
 import Html.Keyed as Keyed
 import Http exposing (emptyBody, expectString, stringResolver, Response(..))
-import Kdl.Parse exposing (parse, Problem)
+import Kdl.Parse exposing (getErrorMessage, messageToString, parse, Problem)
 import Kdl.Serialize exposing (serialize)
 import Kdl.Util exposing (flip, k, maybe, result)
 import List exposing (filter, map)
@@ -123,7 +123,7 @@ viewTest (testName, result) = pair testName <|
                             Nothing -> "<parse should not succeed>"
                         actualResultString = case actualResult of
                             Ok res -> res
-                            Err e -> "<parse error>\n"-- ++ Debug.toString e
+                            Err e -> "<parse error>\n\n" ++ (getErrorMessage e inputData |> messageToString)
                         testSuccess = expectedResult == (Result.toMaybe actualResult)
                     in
                         [ summary []

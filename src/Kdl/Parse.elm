@@ -1,4 +1,4 @@
-module Kdl.Parse exposing (parse, Problem(..))
+module Kdl.Parse exposing (parse, Problem(..), Message, MessageComponent(..), getErrorMessage, messageToString)
 
 import Kdl exposing (Node(..), Value, ValueContents(..), LocatedNode, LocatedValue, Position, SourceRange)
 import Kdl.Shared exposing (identifierCharacter, initialCharacter, unicodeNewline, unicodeSpace)
@@ -65,6 +65,11 @@ type Context
     | WithinRadixNumber Int
     | WithinStrEscape
     | WithinEscline
+
+stringTypeToString : StringType -> String
+stringTypeToString s = case s of
+    Raw -> "raw"
+    Quoted -> "quoted"
 
 optional : a -> Parser c x a -> Parser c x a
 optional default p = oneOf [p, succeed default]
@@ -684,3 +689,223 @@ translateDeadEnd {row, col, contextStack, problem} =
                 ContextFrame WithinNode nodeStart :: _ ->
                     MalformedNodeComponent {nodeStart = nodeStart, badElement = finalPosition}
                 _ -> Unexpected "Encountered a PMalformedNodeComponent while not parsing a node"
+
+type MessageComponent
+    = PlainText String
+    | Emphasized String
+    | LineExerpt {lineNo: Int, highlightStart: Int, highlightEnd: Int, exerpt: String}
+    | Link String
+
+type alias Message = List MessageComponent
+
+uppercaseEscapeCodes : List Char
+uppercaseEscapeCodes = ['N', 'R', 'T', 'B', 'F', 'U']
+
+type alias Exerpt =  {lineNo: Int, highlightStart: Int, highlightEnd: Int, exerpt: String}
+
+exerptCode : String -> SourceRange -> Exerpt
+exerptCode source ((startRow, startCol) as start, (endRow, endCol) as end) =
+    let
+        bufferSize = if start == end then 17 else 10
+        sourceLines = String.lines source
+        interestingLine = sourceLines
+            |> List.drop (startRow - 1)
+            |> List.head
+            |> withDefault ""
+        lineLength = String.length interestingLine
+        trueEndCol = if endRow > startRow then lineLength else endCol
+        clipStart = startCol > bufferSize + 3
+        clipEnd = trueEndCol + bufferSize + 3 < lineLength
+        exerptStart = if clipStart then startCol - bufferSize else 0
+        dropCharsLeft = max 0 (exerptStart - 3)
+        exerptEnd = if clipEnd then trueEndCol + bufferSize else lineLength
+        newStartCol = startCol - dropCharsLeft - 1
+        newEndCol = trueEndCol - dropCharsLeft
+        clippedString = (if clipStart then "..." else "") ++ (String.slice exerptStart exerptEnd interestingLine) ++ (if clipEnd then "..." else "")
+    in {lineNo = startRow, highlightStart = newStartCol, highlightEnd = newEndCol, exerpt = clippedString}
+
+pointAtCode : String -> Position -> Exerpt
+pointAtCode source pos = exerptCode source (pos, pos)
+
+getTextUnderRange : SourceRange -> String -> String
+getTextUnderRange ((startRow, startCol), (endRow, endCol)) source =
+    let
+        sourceLines = String.lines source
+        relevantLines = List.drop (startRow - 1) sourceLines |> List.take (endRow - startRow + 1)
+        mapLast f l = case l of
+            [] -> []
+            [last] -> [f last]
+            h :: t -> h :: mapLast f t
+    in case relevantLines of
+        [] -> ""
+        [line] -> String.slice (startCol - 1) endCol line
+        h :: t -> String.dropLeft (startCol - 1) h :: (mapLast (String.left endCol) t)
+            |> String.join "\n"
+
+getErrorMessage : String -> Problem -> Message
+getErrorMessage source p = case p of
+    Unexpected msg ->
+        [ PlainText "I encountered an unexpected problem while parsing the input!  Merely seeing this message while not having tampered with the library is cause for a bug report, if it behooves you.  The only other information I have is this message:\n"
+        , Emphasized msg
+        ]    
+    UnrecognizedEscapeCode            {{-strLoc,-} escLoc, char}               ->
+        [ PlainText <| "While parsing a string, I found an escape code I didn't know what to do with.  Specifically, you used the escape code '\\" ++ String.fromChar char ++ "' here:"
+        , LineExerpt (exerptCode source escLoc)
+        , PlainText <| "But I don't recognize that sequence!  "
+        ] ++  if member char uppercaseEscapeCodes
+            then [PlainText <| "That said, there is a valid escape code with a lowercase letter " ++ String.fromChar (Char.toLower char) ++ ".  Maybe that's what you meant to use?"]
+            else [PlainText "For a list of supported escape codes, see this link:\n", Link "https://github.com/kdl-org/kdl/blob/270c60c/SPEC.md#quoted-string"]
+    AttemptingToEscapeNewlineInString {{-strLoc,-} backslashLoc}               ->
+        [ PlainText "While parsing a string, I saw an backslash followed by a newline, right here:"
+        , LineExerpt <| pointAtCode source backslashLoc
+        , PlainText "If you meant to escape the newline so that it'll show up in the string, you don't actually need to include the backslash!  In KDL, all strings are by default multi-line strings.  If you want a literal backslash instead, make sure you use two backslashes, so that the first escapes the second."
+        ]
+    UnicodeEscapeNotOpened            {{-strLoc,-} escLoc}                     ->
+        [ PlainText "While parsing a string, I saw a unicode escape code here:"
+        , LineExerpt <| exerptCode source escLoc
+        , PlainText "But I didn't see any unicode codepoint after!  To use the \\u escape code, make sure you include a unicode codepoint, so that it looks something like "
+        , Emphasized "\\u{4a}"
+        , PlainText " (which renders as \"J\") or "
+        , Emphasized "\\u{1F990}"
+        , PlainText " (which renders as \"🦐\")"
+        ]
+    UnicodeEscapeEmpty                {{-strLoc,-} escLoc}                     ->
+        [ PlainText "While parsing a string, I saw a unicode escape code here:"
+        , LineExerpt <| exerptCode source escLoc
+        , PlainText "But I didn't see any hexadecimal digits in the curly parenthesis!  To use the \\u escape code, make sure you include a unicode codepoint, so that it looks something like "
+        , Emphasized "\\u{4a}"
+        , PlainText " (which renders as \"J\") or "
+        , Emphasized "\\u{1F990}"
+        , PlainText " (which renders as \"🦐\")"
+        ]
+    UnicodeEscapeInvalidCharacters    {{-strLoc,-} escLoc}                     ->
+        [ PlainText "While parsing a string, I saw a unicode escape code here:"
+        , LineExerpt <| exerptCode source escLoc
+        , PlainText "But some of the characters in the curly brackets weren't hexadecimal digits!  Make sure you only use the numbers 0-9 and letters a-f when entering hexadecimal codepoints.  For example, "
+        , Emphasized "\\u{4a}"
+        , PlainText " (which renders as \"J\") or "
+        , Emphasized "\\u{1F990}"
+        , PlainText " (which renders as \"🦐\")"
+        ]
+    UnicodeEscapeTooLong              {{-strLoc,-} escLoc}                     ->
+        [ PlainText "While parsing a string, I saw a unicode escape code here:"
+        , LineExerpt <| exerptCode source escLoc
+        , PlainText "But there were way too many characters in the curly parenthesis!  Unicode escapes can have at most six digits, which should be all you need for any codepoint.  If you want multiple codepoints one after another, you can use multiple unicode escapes, like this:  "
+        , Emphasized "\\u{1f3f3}\\u{fe0f}\\u{200d}\\u{26a7}\\u{fe0f}"
+        , PlainText " (which renders as \"🏳️‍⚧️\")"
+        ]
+    UnicodeEscapeNotClosed            {{-strLoc,-} escLoc}                     ->
+        [ PlainText "While parsing a string, I saw a unicode escape code here:"
+        , LineExerpt <| pointAtCode source escLoc
+        , PlainText "And while I do see the opening curly bracket, I don't see any closing curly bracket!"
+        ]
+    UnclosedString                    {strType, strStart}                  ->
+        [ PlainText <| "I see the start of a " ++ stringTypeToString strType ++ " string here:"
+        , LineExerpt <| pointAtCode source strStart
+        , PlainText "But I never see where it gets closed!"
+        ]
+    UnclosedType                      {typeOf, typeStart, gaveUpAt}        ->
+        let
+            firstLine =
+                case typeOf of
+                    TNode -> "It looks like you're trying to start a type annotation for a node here:"
+                    TProperty prop -> "It looks like you're trying to start a type annotation for the" ++ getTextUnderRange prop source ++ " property here:"
+                    TArgument -> "It looks like you're trying to start a type annotation for a value here:"
+        in
+            [ PlainText <| firstLine
+            , LineExerpt <| pointAtCode source typeStart
+            , PlainText "But it seems like you never close it!  I got as far as this point:"
+            , LineExerpt <| pointAtCode source gaveUpAt
+            , PlainText "But I stopped looking, because it didn't look like I was parsing a type annotation anymore.  Make sure you've included a closing parenthesis, and that your type annotation is a valid identifier.  You can always use a string as an identifier if you need to include characters like spaces."
+            ]
+    MalformedRawStringOpening         {stringStart{-, nonQuotationCharacter-}} ->
+        [ PlainText "It looks like you're trying to open a raw string, but forgot the quotation mark (\"):"
+        , LineExerpt <| exerptCode source stringStart
+        ]
+    MalformedNumber                   {numberStart, malformedAt}           ->
+        [ PlainText "I saw what looks like it might be a number here:"
+        , LineExerpt <| pointAtCode source numberStart
+        , PlainText "But as I tried to parse it, I encountered a part I didn't understand, here:"
+        , LineExerpt <| pointAtCode source malformedAt
+        , PlainText "A number should generally have a form like "
+        , Emphasized "15"
+        , PlainText " or "
+        , Emphasized "1.320_001e-5"
+        , PlainText " or "
+        , Emphasized "0xACAB"
+        , PlainText " or "
+        , Emphasized "6_942"
+        , PlainText "\n\nIf you didn't mean to have a number here, maybe try surrounding it with quotes (\") to make it a string or identifier."
+        ]
+    UnclosedMultilineComment          {commentStart}                       ->
+        [ PlainText "I see the start of a multi-line comment here:"
+        , LineExerpt <| pointAtCode source commentStart
+        , PlainText "But I don't see where it closes!  Make sure you add a \""
+        , Emphasized "*/"
+        , PlainText "\" somewhere to close it off."
+        ]
+    UnclosedChildBlock                {blockStart}                         ->
+        [ PlainText "It looks like you open a block to contain child nodes here:"
+        , LineExerpt <| pointAtCode source blockStart
+        , PlainText "But I got all the way to the end of the input and never saw a closing brace ("
+        , Emphasized "}"
+        , PlainText ").  Make sure you add one in somewhere after you're done declaring all the children!"
+        ]
+    UnterminatedNode                  {blockStart, nodeStart, blockEnd}    ->
+        [ PlainText "It looks like you may have forgotten to include a semicolon or newline right here:"
+        , LineExerpt <| pointAtCode source blockEnd
+        , PlainText "It seems like you open a block of nodes here:"
+        , LineExerpt <| pointAtCode source blockStart
+        , PlainText "and within that block, you declare your last node here:"
+        , LineExerpt <| pointAtCode source nodeStart
+        , PlainText "But then I think you try to close the block here, before I see a semicolon or a newline to close off that node:"
+        , LineExerpt <| pointAtCode source blockEnd
+        ]
+    MissingValue                      {property{-, absentValue-}}              ->
+        [ PlainText "It looks like you defined a property called "
+        , PlainText <| getTextUnderRange property source
+        , PlainText " here:"
+        , LineExerpt <| exerptCode source property
+        , PlainText "So after the equals sign, I was expecting to see a value of some kind, like a number or a string, but I don't see anything I could understand.  Maybe you meant to wrap the value in quotes to make it a string?"
+        ]
+    InvalidIdentifier                 {identifierStart, confusedAt}        ->
+        [ PlainText "I think I'm trying to parse a (bare) identifier that starts here:"
+        , LineExerpt <| pointAtCode source identifierStart
+        , PlainText "But part of the way through, I start seeing characters that can't be part of an identifier unless it's wrapped in quotes (\")"
+        , LineExerpt <| pointAtCode source confusedAt
+        , PlainText "Did you mean for this to be an identifier?  If so, maybe try wrapping it in quotation marks, or removing the bad characters."
+        ]
+    UnfinishedEscline                 {backslashLoc, nextCharOrEof}        ->
+        [ PlainText "I see a backslash here:"
+        , LineExerpt <| pointAtCode source backslashLoc
+        , PlainText "Which normally means that I'm about to parse an escaped newline, but instead, I see:"
+        , LineExerpt <| pointAtCode source nextCharOrEof
+        , PlainText "Maybe you forgot to include a double slash (//) to start a comment?"
+        ]
+    MalformedNodeComponent            {{-nodeStart,-} badElement}              ->
+        [ PlainText "I was trying to parse a node, and was expecting to see either a property (like \"key\"=\"value\"), an argument (like a string or a number), or a block containing child nodes, but instead I encountered something I couldn't understand:"
+        , LineExerpt <| pointAtCode source badElement
+        , PlainText "I'm not quite sure what you meant to put here.  If it was meant to be a string, maybe try wrapping it in quotation marks?"
+        ]
+
+messageToString : Message -> String
+messageToString =
+    let
+        showMessageComponent c = case c of
+            PlainText t -> t
+            Emphasized t -> t
+            Link l -> l
+            LineExerpt {lineNo, highlightStart, highlightEnd, exerpt} ->
+                let
+                    lineNoStr = String.fromInt lineNo
+                    linePrefix = String.repeat (5 - String.length lineNoStr) " " ++ lineNoStr ++ " | "
+                in String.concat
+                    [ "\n\n"
+                    , linePrefix
+                    , exerpt
+                    , "\n"
+                    , String.repeat (8 + highlightStart) " "
+                    , String.repeat (highlightEnd - highlightStart) "^"
+                    , "\n\n"
+                    ]
+    in List.map showMessageComponent >> String.concat
