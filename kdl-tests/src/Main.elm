@@ -123,7 +123,7 @@ viewTest (testName, result) = pair testName <|
                             Nothing -> "<parse should not succeed>"
                         actualResultString = case actualResult of
                             Ok res -> res
-                            Err e -> "<parse error>\n\n" ++ (getErrorMessage e inputData |> messageToString)
+                            Err e -> "<parse error>\n\n" ++ (getErrorMessage inputData e |> messageToString)
                         testSuccess = expectedResult == (Result.toMaybe actualResult)
                     in
                         [ summary []
