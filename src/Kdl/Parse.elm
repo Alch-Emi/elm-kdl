@@ -457,15 +457,24 @@ linespace = oneOf
     , parseLineComment
     ]
 
+parseAstComment : Parser Context PProblem (a -> Maybe a)
+parseAstComment =
+    symbol (Token "/-" (PExpecting <| "node comment"))
+    |. star k () nodespace
+    |> Parser.map (k (k Nothing))
+    |> optional Just
+    |> backtrackable
+
 mkNode
     : (Int, Int)
     -> (Maybe String {- type -}, String {- name -})
-    -> List PropOrArg {- props & args -}
+    -> List (Maybe PropOrArg) {- props & args -}
     -> List LocatedNode {- children -}
     -> (Int, Int)
     -> LocatedNode
-mkNode startLoc (typ, name) propsAndArgs children endLoc =
+mkNode startLoc (typ, name) propsAndArgsM children endLoc =
     let
+        propsAndArgs = List.filterMap identity propsAndArgsM
         props = Dict.fromList <| List.filterMap
             (\pov -> 
                 case pov of
@@ -482,12 +491,6 @@ mkNode startLoc (typ, name) propsAndArgs children endLoc =
 parseNode : Parser Context PProblem (Maybe LocatedNode)
 parseNode =
     let
-        astComment : Parser Context PProblem (a -> Maybe a)
-        astComment =
-            symbol (Token "/-" (PExpecting <| "node comment"))
-            |. star k () nodespace
-            |> Parser.map (k (k Nothing))
-            |> optional Just
         nodeTerminator : Parser Context PProblem ()
         nodeTerminator = oneOf
             [ parseLineComment 
@@ -497,7 +500,7 @@ parseNode =
             , commit () |. lookAhead1 True PMalformedNodeComponent ((==) '}') |. problem PUnterminatedNode
             ]
         children : Parser Context PProblem (List (LocatedNode))
-        children = astComment |= (
+        children = parseAstComment |= (
                 succeed identity
                 |. symbol (Token "{" <| PExpecting "children")
                 |= lazy (\() -> parseNodes)
@@ -509,7 +512,7 @@ parseNode =
             |> Parser.map (Maybe.withDefault [])
             |> inContext WithinChildBlock
     in
-        astComment
+        parseAstComment
         |= (
             succeed mkNode
             |= getPosition
@@ -526,6 +529,7 @@ parseNode =
             |= starL (
                 succeed identity
                 |. (plus k () nodespace |> backtrackable)
+                |= parseAstComment
                 |= parsePropOrArg
             )
             |= ((succeed identity |. (star k () nodespace |> backtrackable) |= children) |> optional [])
