@@ -107,7 +107,12 @@ viewPanel : String -> String -> Html msg
 viewPanel name value = div
     []
     [ h3 [] [text name]
-    , div [] [text value]
+    , div
+        [ style "white-space" "pre"
+        , style "font-family" "mono"
+        ]
+        [ text value
+        ]
     ]
 
 viewTest : (String, Maybe (String, Maybe String, Result Problem String)) -> (String, Html msg)
