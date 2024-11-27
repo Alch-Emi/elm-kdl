@@ -1,4 +1,4 @@
-module Kdl.Parse exposing (parse, ParseProblem(..))
+module Kdl.Parse exposing (parse, Problem(..))
 
 import Kdl exposing (Node(..), Value, ValueContents(..), LocatedNode, LocatedValue, Position, SourceRange)
 import Kdl.Shared exposing (identifierCharacter, initialCharacter, unicodeNewline, unicodeSpace)
@@ -16,7 +16,7 @@ import String
 import Set
 import Parser.Advanced exposing (chompUntilEndOr)
 
-type Problem
+type PProblem
     = PExpecting String
     | PUnrecognizedEscapeCode Char
     | PUnicodeEscapeNotOpened
@@ -104,12 +104,12 @@ lookAhead1 succeedOnEof prob pred =
         |= getOffset
         |> Parser.andThen identity
 
-parseNullVal : Parser c Problem ValueContents
+parseNullVal : Parser c PProblem ValueContents
 parseNullVal =
     succeed NullVal
     |. keyword (Token "null" <| PExpecting "null")
 
-parseEscapeCode : Char -> Parser c Problem String
+parseEscapeCode : Char -> Parser c PProblem String
 parseEscapeCode c = case c of
     'n' -> succeed "\n"
     'r' -> succeed "\r"
@@ -140,7 +140,7 @@ parseEscapeCode c = case c of
         |. symbol (Token "}" PUnicodeEscapeNotClosed)
     _ -> problem (PUnrecognizedEscapeCode c)
 
-parseEscapeSequence : Parser Context Problem String
+parseEscapeSequence : Parser Context PProblem String
 parseEscapeSequence =
     succeed parseEscapeCode
     |. symbol (Token "\\" <| PExpecting "backslash")
@@ -152,7 +152,7 @@ parseEscapeSequence =
     |> andThen identity
     |> inContext WithinStrEscape
 
-parseQuotedStringSegment : Parser Context Problem String
+parseQuotedStringSegment : Parser Context PProblem String
 parseQuotedStringSegment =
     let
         plainStringChar = not << flip member ['"', '\\']
@@ -165,10 +165,10 @@ parseQuotedStringSegment =
         , parseEscapeSequence
         ]
 
-parseQuotedStringInnards : Parser Context Problem String
+parseQuotedStringInnards : Parser Context PProblem String
 parseQuotedStringInnards = star (++) "" parseQuotedStringSegment
 
-parseQuotedString : Parser Context Problem String
+parseQuotedString : Parser Context PProblem String
 parseQuotedString =
     succeed identity
     |. symbol (Token "\"" <| PExpecting "opening quote")
@@ -176,7 +176,7 @@ parseQuotedString =
     |. symbol (Token "\"" PUnclosedString)
     |> inContext WithinQuotedString
 
-parseRawString : Parser Context Problem String
+parseRawString : Parser Context PProblem String
 parseRawString =
     (
         symbol (Token "r" <| PExpecting "opening raw quote")
@@ -195,16 +195,16 @@ parseRawString =
     )
     |> inContext WithinRawString
 
-parseString : Parser Context Problem String
+parseString : Parser Context PProblem String
 parseString = oneOf
     [ parseQuotedString
     , parseRawString
     ]
 
-parseStringVal : Parser Context Problem ValueContents
+parseStringVal : Parser Context PProblem ValueContents
 parseStringVal = parseString |> Parser.map StringVal
 
-parseDigits : (Char -> Bool) -> Parser c Problem String
+parseDigits : (Char -> Bool) -> Parser c PProblem String
 parseDigits isDigitValid =
     let
         parseDigitSeries =
@@ -216,7 +216,7 @@ parseDigits isDigitValid =
             |. (symbol (Token "_" <| PExpecting "underscore") |> optional ())
     in plus (++) "" parseDigitSeries
 
-parseUnsignedRadixNumber : Parser Context Problem BigInt
+parseUnsignedRadixNumber : Parser Context PProblem BigInt
 parseUnsignedRadixNumber =
     let
         numberStyles =
@@ -233,13 +233,13 @@ parseUnsignedRadixNumber =
                 |> Parser.inContext (WithinRadixNumber radix)
     in oneOf (List.map parseNumberStyle numberStyles)
 
-parseSign : Parser c Problem number
+parseSign : Parser c PProblem number
 parseSign = oneOf
     [ succeed 1 |. symbol (Token "+" <| PExpecting "plus")
     , succeed -1 |. symbol (Token "-" <| PExpecting "minus")
     ]
 
-parseUnsignedDecimalNumber : Parser Context Problem BigRational
+parseUnsignedDecimalNumber : Parser Context PProblem BigRational
 parseUnsignedDecimalNumber =
     let
         parseUnsignedDecimalInteger =
@@ -285,7 +285,7 @@ parseUnsignedDecimalNumber =
         )
         |= parseScientificPart
 
-parseNumber : Parser Context Problem BigRational
+parseNumber : Parser Context PProblem BigRational
 parseNumber = 
     let
         parseBody = oneOf
@@ -307,22 +307,22 @@ parseNumber =
         |. lookAhead1 True PMalformedNumber (not << identifierCharacter)
     |> inContext WithinNumber
 
-parseNumberVal : Parser Context Problem ValueContents
+parseNumberVal : Parser Context PProblem ValueContents
 parseNumberVal = Parser.map NumberVal parseNumber
 
-parseBool : Parser c Problem Bool
+parseBool : Parser c PProblem Bool
 parseBool = oneOf
     [ succeed True |. symbol (Token "true" <| PExpecting "true")
     , succeed False |. symbol (Token "false" <| PExpecting "false")
     ]
 
-parseBoolVal : Parser c Problem ValueContents
+parseBoolVal : Parser c PProblem ValueContents
 parseBoolVal = Parser.map BoolVal parseBool
 
 mkLocVal : Position -> Maybe String -> ValueContents -> Position -> LocatedValue
 mkLocVal s t v e = Value (s, e) t v
 
-parseValue : Parser Context Problem LocatedValue
+parseValue : Parser Context PProblem LocatedValue
 parseValue =
     succeed mkLocVal
     |= getPosition
@@ -339,7 +339,7 @@ parseValue =
 signChar : Char -> Bool
 signChar = flip member ['+', '-']
 
-parseBareIdentifier : List Char -> Parser c Problem String
+parseBareIdentifier : List Char -> Parser c PProblem String
 parseBareIdentifier possibleFollowingCharacters = oneOf
     [ variable
         { start = andf (not << signChar) initialCharacter
@@ -366,12 +366,12 @@ parseBareIdentifier possibleFollowingCharacters = oneOf
             |> orf unicodeSpace
         )
 
-parseIdentifier : List Char -> Parser Context Problem String
+parseIdentifier : List Char -> Parser Context PProblem String
 parseIdentifier possibleFollowingCharacters =
     oneOf [parseRawString, parseBareIdentifier possibleFollowingCharacters, parseString]
         |> inContext WithinIdentifier
 
-parsePropOrArg : Parser Context Problem PropOrArg
+parsePropOrArg : Parser Context PProblem PropOrArg
 parsePropOrArg = oneOf
     [ succeed Prop
         |= (backtrackable <| parseIdentifier ['='])
@@ -382,7 +382,7 @@ parsePropOrArg = oneOf
         |= parseValue
     ]
 
-parseType : Parser Context Problem String
+parseType : Parser Context PProblem String
 parseType =
      succeed identity
         |. symbol (Token "(" <| PExpecting "type")
@@ -393,7 +393,7 @@ parseType =
         |. symbol (Token ")" <| PUnclosedType)
     |> inContext WithinType
         
-parseMultilineComment : Parser Context Problem ()
+parseMultilineComment : Parser Context PProblem ()
 parseMultilineComment =
     let
         specialChars = (flip member ['/', '*'])
@@ -412,27 +412,27 @@ parseMultilineComment =
         |. commentGuts
         |> inContext WithinComment
 
-parseLineComment : Parser Context Problem ()
+parseLineComment : Parser Context PProblem ()
 parseLineComment =
     symbol (Token "//" <| PExpecting "linecomment")
     |. chompUntilEndOr "\n"
     |. (optional () <| chompIf ((==) '\n') (PExpecting "linecomment newline"))
     |> inContext WithinComment
 
-ws : Parser Context Problem ()
+ws : Parser Context PProblem ()
 ws =
      oneOf
         [ chompIf unicodeSpace (PExpecting "whitespace") |. chompWhile unicodeSpace |> backtrackable
         , parseMultilineComment
         ]
 
-newline : Parser c Problem ()
+newline : Parser c PProblem ()
 newline = oneOf
     [ symbol (Token "\u{000D}\u{000A}" <| PExpecting "CRLF")
     , chompIf unicodeNewline <| PExpecting "newline"
     ]
 
-nodespace : Parser Context Problem ()
+nodespace : Parser Context PProblem ()
 nodespace = oneOf
     [ ws
     , chompIf ((==) '\\') (PExpecting "escline") 
@@ -445,7 +445,7 @@ nodespace = oneOf
         |> inContext WithinEscline
     ]
 
-linespace : Parser Context Problem ()
+linespace : Parser Context PProblem ()
 linespace = oneOf
     [ newline
     , ws
@@ -474,16 +474,16 @@ mkNode startLoc (typ, name) propsAndArgs children endLoc =
             ) propsAndArgs
     in Node name typ args props children (startLoc, endLoc)
 
-parseNode : Parser Context Problem (Maybe LocatedNode)
+parseNode : Parser Context PProblem (Maybe LocatedNode)
 parseNode =
     let
-        astComment : Parser Context Problem (a -> Maybe a)
+        astComment : Parser Context PProblem (a -> Maybe a)
         astComment =
             symbol (Token "/-" (PExpecting <| "node comment"))
             |. star k () nodespace
             |> Parser.map (k (k Nothing))
             |> optional Just
-        nodeTerminator : Parser Context Problem ()
+        nodeTerminator : Parser Context PProblem ()
         nodeTerminator = oneOf
             [ parseLineComment 
             , newline
@@ -491,7 +491,7 @@ parseNode =
             , end (PExpecting "eof") 
             , commit () |. lookAhead1 True PMalformedNodeComponent ((==) '}') |. problem PUnterminatedNode
             ]
-        children : Parser Context Problem (List (LocatedNode))
+        children : Parser Context PProblem (List (LocatedNode))
         children = astComment |= (
                 succeed identity
                 |. symbol (Token "{" <| PExpecting "children")
@@ -530,17 +530,17 @@ parseNode =
         )
         |> inContext WithinNode
 
-parseNodes : Parser Context Problem (List LocatedNode)
+parseNodes : Parser Context PProblem (List LocatedNode)
 parseNodes =
     succeed identity
     |. star k () linespace
     |= starL (parseNode |. star k () linespace)
     |> Parser.map (List.filterMap identity)
 
-parseDocument : Parser Context Problem (List LocatedNode)
+parseDocument : Parser Context PProblem (List LocatedNode)
 parseDocument = parseNodes |. end PInvalidIdentifier
 
-type ParseProblem
+type Problem
     = Unexpected String
     | UnrecognizedEscapeCode {strLoc: Position, escLoc: SourceRange, char: Char}
     | AttemptingToEscapeNewlineInString {strLoc: Position, backslashLoc: Position}
@@ -567,7 +567,7 @@ type MyContextFrame = ContextFrame Context Position
 makeContextMatchable : DefaultContextFrame -> MyContextFrame
 makeContextMatchable {row, col, context} = ContextFrame context (row, col)
 
-parse : String -> Result ParseProblem (List (LocatedNode))
+parse : String -> Result Problem (List (LocatedNode))
 parse =
     Parser.run parseDocument
     >> Result.mapError (
@@ -576,7 +576,7 @@ parse =
         >> Maybe.withDefault (Unexpected "No dead ends returned in parse")
     )
 
-translateDeadEnd : DeadEnd Context Problem -> ParseProblem
+translateDeadEnd : DeadEnd Context PProblem -> Problem
 translateDeadEnd {row, col, contextStack, problem} =
     let
         finalPosition = (row, col)
