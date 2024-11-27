@@ -604,7 +604,7 @@ translateDeadEnd {row, col, contextStack, problem} =
                 _ -> Unexpected "Encountered a PUnicodeInvalidCharacters error while not parsing an escape sequence in a string"
             PUnicodeEscapeTooLong -> case myContextStack of
                 ContextFrame WithinStrEscape escStart :: ContextFrame WithinQuotedString strLoc :: _ ->
-                    UnicodeEscapeInvalidCharacters {strLoc=strLoc, escLoc=(escStart, finalPosition)}
+                    UnicodeEscapeTooLong {strLoc=strLoc, escLoc=(escStart, finalPosition)}
                 _ -> Unexpected "Encountered a PUnicodeEscapeTooLong error while not parsing an escape sequence in a string"
             PUnicodeEscapeNotClosed -> case myContextStack of
                 ContextFrame WithinStrEscape escLoc :: ContextFrame WithinQuotedString strStart :: _ ->
