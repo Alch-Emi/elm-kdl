@@ -160,7 +160,7 @@ serializeNumberVal n =
                     ]
             else if not <| BigRational.gt ten rat
                 then aux (BigRational.div rat ten) (exp + 1)
-            else if BigRational.lt rat (BigRational.fromInts 1 10)
+            else if not <| BigRational.gt rat (BigRational.fromInts 1 10)
                 then aux (BigRational.mul rat ten) (exp - 1)
             else if exp == 0
                 then BigRational.toDecimalString 30 rat |> singletonBag
