@@ -587,8 +587,8 @@ translateDeadEnd {row, col, contextStack, problem} =
             PUnrecognizedEscapeCode c -> case myContextStack of
                 ContextFrame WithinStrEscape escStart :: ContextFrame WithinQuotedString strLoc :: _ ->
                     if c == '\n'
-                        then AttemptingToEscapeNewlineInString {strLoc=strLoc, backslashLoc=(row, col - 1)}
-                        else UnrecognizedEscapeCode {strLoc=strLoc, escLoc=(escStart, finalPosition), char=c}
+                        then AttemptingToEscapeNewlineInString {strLoc=strLoc, backslashLoc=escStart}
+                        else UnrecognizedEscapeCode {strLoc=strLoc, escLoc=(escStart, (row, col - 1)), char=c}
                 _ -> Unexpected "Encountered a PUnrecognizedEscapeCode error while not parsing an escape code in a string"
             PUnicodeEscapeNotOpened -> case myContextStack of
                 ContextFrame WithinStrEscape escStart :: ContextFrame WithinQuotedString strLoc :: _ ->
