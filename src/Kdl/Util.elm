@@ -1,4 +1,4 @@
-module Kdl.Util exposing (andf, flip, k, liftA2f, maybe, orf, parseRadix, sequenceListMaybe)
+module Kdl.Util exposing (andf, flip, k, liftA2f, maybe, orf, parseRadix, result, sequenceListMaybe)
 
 import BigInt exposing (BigInt)
 
@@ -21,6 +21,11 @@ maybe : o -> (v -> o) -> Maybe v -> o
 maybe d f m = case m of
     Just v -> f v
     Nothing -> d
+
+result : (e -> o) -> (v -> o) -> Result e v -> o
+result ifErr ifOk r = case r of
+    Err e -> ifErr e
+    Ok v -> ifOk v
 
 parseHexDigit : Char -> Maybe Int
 parseHexDigit h = case h of
