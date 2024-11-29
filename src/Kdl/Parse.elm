@@ -1,17 +1,17 @@
 module Kdl.Parse exposing (parse, Problem(..), Message, MessageComponent(..), getErrorMessage, messageToString)
 
-import Kdl exposing (Node(..), Value, ValueContents(..), LocatedNode, LocatedValue, Position, SourceRange)
-import Kdl.Shared exposing (identifierCharacter, initialCharacter, unicodeNewline, unicodeSpace)
-import Kdl.Util exposing (andf, flip, k, maybe, orf, parseRadix)
+import Kdl exposing (KdlNumber(..), Node(..), Value, ValueContents(..), LocatedNode, LocatedValue, Position, SourceRange)
+import Kdl.Shared exposing (bom, identifierCharacter, initialCharacter, isAnyWhitespace, legalCharacter, unicodeNewline, unicodeScalarValue, unicodeSpace)
+import Kdl.Util exposing (andf, flip, k, maybe, orf, parseRadix, result, toHex)
 
 import BigInt exposing (BigInt)
 import BigRational exposing (BigRational)
 
-import Char exposing (isDigit)
+import Char exposing (isDigit, toCode)
 import Dict
 import List exposing (member)
 import Maybe exposing (withDefault)
-import Parser.Advanced as Parser exposing (DeadEnd, Parser, Nestable(..), Token(..), (|.), (|=), andThen, backtrackable, chompIf, chompUntil, chompWhile, commit, end, getChompedString, getOffset, getSource, getPosition, inContext, lazy, problem, keyword, mapChompedString, oneOf, succeed, symbol, variable)
+import Parser.Advanced as Parser exposing (DeadEnd, Parser, Nestable(..), Token(..), (|.), (|=), andThen, backtrackable, chompIf, chompUntil, chompWhile, commit, end, getChompedString, getOffset, getSource, getPosition, inContext, lazy, problem, keyword, oneOf, succeed, symbol, variable)
 import String
 import Set
 import Parser.Advanced exposing (chompUntilEndOr)
@@ -24,12 +24,14 @@ type PProblem
     | PUnicodeEscapeInvalidCharacters
     | PUnicodeEscapeTooLong
     | PUnicodeEscapeNotClosed
+    | PIllegalUnicodeCodepoint
     | PUnclosedString
     | PUnclosedType
+    | PUnrecognizedKeyword
+    | PForbiddenBareString
     | PMalformedRawStringOpening
     | PUnclosedMultilineComment
     | PUnclosedChildBlock
-    | PUnterminatedNode
     | PMissingValue
     | PMalformedNodeComponent
     | PInvalidIdentifier
@@ -54,7 +56,7 @@ type Context
     | WithinProp
     | WithinComment
     | WithinType
-    | WithinIdentifier
+    | WithinString
     | WithinValue
     | WithinNumber
     | WithinExponent
@@ -65,6 +67,8 @@ type Context
     | WithinRadixNumber Int
     | WithinStrEscape
     | WithinEscline
+    | WithinKeyword
+    | WithinPropValue SourceRange
 
 stringTypeToString : StringType -> String
 stringTypeToString s = case s of
@@ -109,18 +113,13 @@ lookAhead1 succeedOnEof prob pred =
         |= getOffset
         |> Parser.andThen identity
 
-parseNullVal : Parser c PProblem ValueContents
-parseNullVal =
-    succeed NullVal
-    |. keyword (Token "null" <| PExpecting "null")
-
 parseEscapeCode : Char -> Parser c PProblem String
 parseEscapeCode c = case c of
     'n' -> succeed "\n"
     'r' -> succeed "\r"
     't' -> succeed "\t"
+    's' -> succeed " "
     '\\' -> succeed "\\"
-    '/' -> succeed "/"
     '"' -> succeed "\""
     'b' -> succeed "\u{0008}"
     'f' -> succeed "\u{000C}"
@@ -138,12 +137,21 @@ parseEscapeCode c = case c of
                     else if String.length s > 6
                         then problem PUnicodeEscapeTooLong
                         else case parseRadix 16 (String.toLower s) of
-                            Just n -> succeed (String.fromList [Char.fromCode <| withDefault 0 <| String.toInt <| BigInt.toString n])
+                            Just n ->
+                                let
+                                    codepoint = BigInt.toString n |> String.toInt |> withDefault 0
+                                    char = Char.fromCode codepoint
+                                    string = String.fromChar char
+                                in if unicodeScalarValue char
+                                    then succeed string
+                                    else problem PIllegalUnicodeCodepoint
                             Nothing -> problem PUnicodeEscapeInvalidCharacters
                 )
             )
         |. symbol (Token "}" PUnicodeEscapeNotClosed)
-    _ -> problem (PUnrecognizedEscapeCode c)
+    _ -> if isAnyWhitespace c
+        then chompWhile isAnyWhitespace |> Parser.map (k "")
+        else  problem (PUnrecognizedEscapeCode c)
 
 parseEscapeSequence : Parser Context PProblem String
 parseEscapeSequence =
@@ -183,16 +191,12 @@ parseQuotedString =
 
 parseRawString : Parser Context PProblem String
 parseRawString =
-    (
-        symbol (Token "r" <| PExpecting "opening raw quote")
-        |> backtrackable -- Note that r#hello_world is a valid identifier
-    )
-    |. chompWhile ((==) '#')
+    plus k () (chompIf ((==) '#') (PExpecting "raw string"))
     |. symbol (Token "\"" <| PMalformedRawStringOpening)
     |> getChompedString 
     |> andThen (\openingToken ->
         let
-            closeToken = Token (String.dropLeft 1 openingToken |> String.reverse) PUnclosedString
+            closeToken = Token (String.reverse openingToken) PUnclosedString
         in
             chompUntil closeToken
             |> getChompedString
@@ -200,14 +204,31 @@ parseRawString =
     )
     |> inContext WithinRawString
 
-parseString : Parser Context PProblem String
-parseString = oneOf
-    [ parseQuotedString
-    , parseRawString
-    ]
+identifyKeyword : String -> Maybe ValueContents
+identifyKeyword keyword = case keyword of
+    "true" -> Just <| BoolVal True
+    "false" -> Just <| BoolVal False
+    "null" -> Just NullVal
+    "inf" -> Just (NumberVal PositiveInfinity)
+    "-inf" -> Just (NumberVal NegativeInfinity)
+    "nan" -> Just (NumberVal NaN)
+    _ -> Nothing
+
+parseKeyword : Parser Context PProblem ValueContents
+parseKeyword =
+    succeed identifyKeyword
+    |. backtrackable (chompIf ((==) '#') (PExpecting "keyword"))
+    |= variable
+        { start = identifierCharacter
+        , inner = identifierCharacter
+        , reserved = Set.empty
+        , expecting = PExpecting "keyword"
+        }
+    |> Parser.andThen (maybe (problem PUnrecognizedKeyword) succeed)
+    |> inContext WithinKeyword
 
 parseStringVal : Parser Context PProblem ValueContents
-parseStringVal = parseString |> Parser.map StringVal
+parseStringVal = parseString [] |> Parser.map StringVal
 
 parseDigits : (Char -> Bool) -> Parser c PProblem String
 parseDigits isDigitValid =
@@ -319,16 +340,7 @@ parseNumber =
     |> inContext WithinNumber
 
 parseNumberVal : Parser Context PProblem ValueContents
-parseNumberVal = Parser.map NumberVal parseNumber
-
-parseBool : Parser c PProblem Bool
-parseBool = oneOf
-    [ succeed True |. symbol (Token "true" <| PExpecting "true")
-    , succeed False |. symbol (Token "false" <| PExpecting "false")
-    ]
-
-parseBoolVal : Parser c PProblem ValueContents
-parseBoolVal = Parser.map BoolVal parseBool
+parseNumberVal = Parser.map NumberVal (parseNumber |> Parser.map Rational)
 
 mkLocVal : Position -> Maybe String -> ValueContents -> Position -> LocatedValue
 mkLocVal s t v e = Value (s, e) t v
@@ -339,10 +351,9 @@ parseValue =
     |= getPosition
     |= optional Nothing (Parser.map Just parseType)
     |= oneOf
-    [ parseStringVal
+    [ parseKeyword
+    , parseStringVal
     , parseNumberVal
-    , parseBoolVal
-    , parseNullVal
     ]
     |= getPosition
     |> inContext WithinValue
@@ -350,12 +361,12 @@ parseValue =
 signChar : Char -> Bool
 signChar = flip member ['+', '-']
 
-parseBareIdentifier : List Char -> Parser c PProblem String
-parseBareIdentifier possibleFollowingCharacters = oneOf
+parseBareString : List Char -> Parser c PProblem String
+parseBareString possibleFollowingCharacters = oneOf
     [ variable
         { start = andf (not << signChar) initialCharacter
         , inner = identifierCharacter
-        , reserved = Set.fromList ["true", "false", "null"]
+        , reserved = Set.empty
         , expecting = PExpecting "variable"
         }
     , chompIf signChar (PExpecting "-variable")
@@ -376,18 +387,36 @@ parseBareIdentifier possibleFollowingCharacters = oneOf
             |> orf unicodeNewline
             |> orf unicodeSpace
         )
+    |> Parser.andThen (\s ->
+        case identifyKeyword s of
+            Nothing -> succeed s
+            Just _ -> problem PForbiddenBareString
+    )
 
-parseIdentifier : List Char -> Parser Context PProblem String
-parseIdentifier possibleFollowingCharacters =
-    oneOf [parseRawString, parseBareIdentifier possibleFollowingCharacters, parseString]
-        |> inContext WithinIdentifier
+parseString : List Char -> Parser Context PProblem String
+parseString possibleFollowingCharacters =
+    oneOf
+        [ parseRawString
+        , parseBareString possibleFollowingCharacters
+        , parseQuotedString
+        ]
+        |> inContext WithinString
 
 parsePropOrArg : Parser Context PProblem PropOrArg
 parsePropOrArg = oneOf
-    [ succeed Prop
-        |= (backtrackable <| parseIdentifier ['='])
+    [ succeed (\a b c -> (a, b, c))
+        |= getPosition
+        |= (backtrackable <| parseString ['='])
+        |= getPosition
+        |. star k () nodespace
         |. symbol (Token "=" <| PExpecting "equals")
-        |= (parseValue |> orProblem PMissingValue)
+        |. star k () nodespace
+        |> Parser.andThen (\(startPos, keyName, (endRow, endCol)) ->
+            succeed (Prop keyName)
+            |= parseValue
+            |> orProblem PMissingValue
+            |> inContext (WithinPropValue (startPos, (endRow, endCol - 1)))
+        )
         |> inContext WithinProp
     , succeed Arg
         |= parseValue
@@ -397,11 +426,17 @@ parseType : Parser Context PProblem String
 parseType =
      succeed identity
         |. symbol (Token "(" <| PExpecting "type")
+        |. star k () nodespace
         |= oneOf
-            [ parseIdentifier [')']
+            [ parseString [')']
             , commit identity |= problem PInvalidIdentifier
             ]
-        |. symbol (Token ")" <| PUnclosedType)
+        |. oneOf
+            [ star k () nodespace
+                |. symbol (Token ")" <| PUnclosedType)
+            , commit identity |= problem PUnclosedType
+            ]
+        |. star k () nodespace
     |> inContext WithinType
         
 parseMultilineComment : Parser Context PProblem ()
@@ -451,6 +486,7 @@ nodespace = oneOf
         |. oneOf
             [ parseLineComment
             , newline
+            , end (PExpecting "endtimes")
             , commit identity |= problem PUnfinishedEscline
             ]
         |> inContext WithinEscline
@@ -502,8 +538,8 @@ parseNode =
             [ parseLineComment 
             , newline
             , symbol (Token ";" <| PExpecting "semicolon")
-            , end (PExpecting "eof") 
-            , commit () |. lookAhead1 True PMalformedNodeComponent ((==) '}') |. problem PUnterminatedNode
+            , lookAhead1 True (PExpecting "eof or }") ((==) '}') |> Parser.map (k ())
+            , commit identity |= problem PMalformedNodeComponent
             ]
         children : Parser Context PProblem (List (LocatedNode))
         children = parseAstComment |= (
@@ -526,11 +562,11 @@ parseNode =
                 [ succeed Tuple.pair
                     |= (parseType |> Parser.map Just)
                     |= oneOf
-                        [ parseIdentifier [';', '/', '}']
+                        [ parseString [';', '/', '}']
                         , commit identity |= problem PInvalidIdentifier
                         ]
                 , succeed (Tuple.pair Nothing)
-                    |= parseIdentifier [';', '/', '}']
+                    |= parseString [';', '/', '}']
                 ]
             |= starL (
                 succeed identity
@@ -555,6 +591,23 @@ parseNodes =
 parseDocument : Parser Context PProblem (List LocatedNode)
 parseDocument = parseNodes |. end PInvalidIdentifier
 
+findInvalidChars : String -> Maybe Position
+findInvalidChars =
+    Parser.run
+        (
+            oneOf
+                [ chompIf (orf legalCharacter ((==) bom)) ()
+                , succeed ()
+                ]
+            |. chompWhile legalCharacter
+            |. end ()
+        )
+    >> result
+        ( List.head
+            >> Maybe.map (\{row, col} -> (row, col))
+        )
+        ( k Nothing )
+
 type Problem
     = Unexpected String
     | UnrecognizedEscapeCode {strLoc: Position, escLoc: SourceRange, char: Char}
@@ -564,6 +617,7 @@ type Problem
     | UnicodeEscapeInvalidCharacters {strLoc: Position, escLoc: SourceRange}
     | UnicodeEscapeTooLong {strLoc: Position, escLoc: SourceRange}
     | UnicodeEscapeNotClosed {strLoc: SourceRange, escLoc: Position}
+    | UnicodeEscapeBadCodepoint {strLoc: Position, escLoc: SourceRange}
     | UnclosedString {strType: StringType, strStart: Position}
     | UnclosedType {typeOf: TypeableThing, typeStart: Position, gaveUpAt: Position}
     | MalformedRawStringOpening {stringStart: SourceRange, nonQuotationCharacter: Position}
@@ -575,6 +629,9 @@ type Problem
     | InvalidIdentifier {identifierStart: Position, confusedAt: Position}
     | UnfinishedEscline {backslashLoc: Position, nextCharOrEof: Position}
     | MalformedNodeComponent {nodeStart: Position, badElement: Position}
+    | ForbiddenCharacter {charPos: Position}
+    | ForbiddenBareString {strLoc: SourceRange}
+    | UnrecognizedKeyword {keywordLoc: SourceRange}
 
 type alias DefaultContextFrame = {row: Int, col: Int, context: Context}
 type MyContextFrame = ContextFrame Context Position
@@ -583,13 +640,16 @@ makeContextMatchable : DefaultContextFrame -> MyContextFrame
 makeContextMatchable {row, col, context} = ContextFrame context (row, col)
 
 parse : String -> Result Problem (List (LocatedNode))
-parse =
-    Parser.run parseDocument
-    >> Result.mapError (
-        List.head
-        >> Maybe.map translateDeadEnd
-        >> Maybe.withDefault (Unexpected "No dead ends returned in parse")
-    )
+parse s =
+    case findInvalidChars s of
+        Nothing ->
+            Parser.run parseDocument s
+            |> Result.mapError (
+                List.head
+                >> Maybe.map translateDeadEnd
+                >> Maybe.withDefault (Unexpected "No dead ends returned in parse")
+            )
+        Just pos -> Err <| ForbiddenCharacter {charPos = pos}
 
 translateDeadEnd : DeadEnd Context PProblem -> Problem
 translateDeadEnd {row, col, contextStack, problem} =
@@ -617,6 +677,10 @@ translateDeadEnd {row, col, contextStack, problem} =
                 ContextFrame WithinStrEscape escStart :: ContextFrame WithinQuotedString strLoc :: _ ->
                     UnicodeEscapeInvalidCharacters {strLoc=strLoc, escLoc=(escStart, finalPosition)}
                 _ -> Unexpected "Encountered a PUnicodeInvalidCharacters error while not parsing an escape sequence in a string"
+            PIllegalUnicodeCodepoint -> case myContextStack of
+                ContextFrame WithinStrEscape escStart :: ContextFrame WithinQuotedString strLoc :: _ ->
+                    UnicodeEscapeBadCodepoint {strLoc=strLoc, escLoc=(escStart, (row, col - 1))}
+                _ -> Unexpected "Encountered a PIllegalUnicodeCodepoint error while not parsing an escape sequence in a string"
             PUnicodeEscapeTooLong -> case myContextStack of
                 ContextFrame WithinStrEscape escStart :: ContextFrame WithinQuotedString strLoc :: _ ->
                     UnicodeEscapeTooLong {strLoc=strLoc, escLoc=(escStart, finalPosition)}
@@ -642,10 +706,10 @@ translateDeadEnd {row, col, contextStack, problem} =
                     :: _ ->
                     UnclosedType {typeOf=TArgument,typeStart=typeStart,gaveUpAt=finalPosition}
                 ContextFrame WithinType typeStart
-                    :: ContextFrame WithinValue (valStartRow, valStartCol)
-                    :: ContextFrame WithinProp propStart
+                    :: ContextFrame WithinValue _
+                    :: ContextFrame (WithinPropValue propLoc) _
                     :: _ ->
-                    UnclosedType {typeOf=TProperty (propStart, (valStartRow, valStartCol - 2)),typeStart=typeStart,gaveUpAt=finalPosition}
+                    UnclosedType {typeOf=TProperty propLoc,typeStart=typeStart,gaveUpAt=finalPosition}
                 _ -> Unexpected "Encountered a PUnclosedType error while not parsing a value, property, or node's type"
             PMalformedRawStringOpening -> case myContextStack of
                 ContextFrame WithinRawString strStart :: _ ->
@@ -669,18 +733,12 @@ translateDeadEnd {row, col, contextStack, problem} =
                 ContextFrame WithinChildBlock blockStart :: _ ->
                     UnclosedChildBlock {blockStart = blockStart}
                 _ -> Unexpected "Encountered a PUnclosedChildBlock while not parsing a block of children"
-            PUnterminatedNode -> case myContextStack of
-                ContextFrame WithinNode nodeStart
-                    :: ContextFrame WithinChildBlock blockStart
-                    :: _ ->
-                    UnterminatedNode {blockStart = blockStart, nodeStart = nodeStart, blockEnd = finalPosition}
-                _ -> Unexpected "Encountered a PUnterminatedNode while not parsing a node within a child block"
             PMissingValue -> case myContextStack of
-                ContextFrame WithinProp propStart :: _ ->
-                    MissingValue {property = (propStart, (row, col - 2)), absentValue = finalPosition}
+                ContextFrame (WithinPropValue propLoc) _ :: _ ->
+                    MissingValue {property = propLoc, absentValue = finalPosition}
                 _ -> Unexpected "Encountered a PMissingValue while not parsing a property"
             PInvalidIdentifier -> case myContextStack of
-                ContextFrame WithinIdentifier identStart :: _ ->
+                ContextFrame WithinString identStart :: _ ->
                     InvalidIdentifier {identifierStart = identStart, confusedAt = finalPosition}
                 ContextFrame WithinType _ :: _ ->
                     InvalidIdentifier {identifierStart = finalPosition, confusedAt = finalPosition}
@@ -699,6 +757,14 @@ translateDeadEnd {row, col, contextStack, problem} =
                 ContextFrame WithinNode nodeStart :: _ ->
                     MalformedNodeComponent {nodeStart = nodeStart, badElement = finalPosition}
                 _ -> Unexpected "Encountered a PMalformedNodeComponent while not parsing a node"
+            PUnrecognizedKeyword -> case myContextStack of
+                ContextFrame WithinKeyword keywordStart :: _ ->
+                    UnrecognizedKeyword {keywordLoc = (keywordStart, (row, col - 1))}
+                _ -> Unexpected "Encountered a PUnrecognizedKeyword while not parsing a keyword"
+            PForbiddenBareString -> case myContextStack of
+                ContextFrame WithinString identStart :: _ ->
+                    ForbiddenBareString {strLoc = (identStart, (row, col - 1))}
+                _ -> Unexpected "Encountered a PForbiddenBareString while not parsing a string"
 
 type MessageComponent
     = PlainText String
@@ -809,6 +875,11 @@ getErrorMessage source p = case p of
         , LineExerpt <| pointAtCode source escLoc
         , PlainText "And while I do see the opening curly bracket, I don't see any closing curly bracket!"
         ]
+    UnicodeEscapeBadCodepoint         {{-strLoc,-} escLoc}                     ->
+        [ PlainText "The unicode codepoint being escaped here doesn't seem like a valid unicode codepoint:"
+        , LineExerpt <| exerptCode source escLoc
+        , PlainText "Double check to make sure that the hex code here corresponds to a real unicode character, and that you didn't make any typos."
+        ]
     UnclosedString                    {strType, strStart}                  ->
         [ PlainText <| "I see the start of a " ++ stringTypeToString strType ++ " string here:"
         , LineExerpt <| pointAtCode source strStart
@@ -819,14 +890,14 @@ getErrorMessage source p = case p of
             firstLine =
                 case typeOf of
                     TNode -> "It looks like you're trying to start a type annotation for a node here:"
-                    TProperty prop -> "It looks like you're trying to start a type annotation for the" ++ getTextUnderRange prop source ++ " property here:"
+                    TProperty prop -> "It looks like you're trying to start a type annotation for the " ++ getTextUnderRange prop source ++ " property here:"
                     TArgument -> "It looks like you're trying to start a type annotation for a value here:"
         in
             [ PlainText <| firstLine
             , LineExerpt <| pointAtCode source typeStart
             , PlainText "But it seems like you never close it!  I got as far as this point:"
             , LineExerpt <| pointAtCode source gaveUpAt
-            , PlainText "But I stopped looking, because it didn't look like I was parsing a type annotation anymore.  Make sure you've included a closing parenthesis, and that your type annotation is a valid identifier.  You can always use a string as an identifier if you need to include characters like spaces."
+            , PlainText "But I stopped looking because it didn't look like I was parsing a type annotation anymore.  Make sure you've included a closing parenthesis, and that your type annotation is a valid identifier.  You can always use a string as an identifier if you need to include spaces or other things like that."
             ]
     MalformedRawStringOpening         {stringStart{-, nonQuotationCharacter-}} ->
         [ PlainText "It looks like you're trying to open a raw string, but forgot the quotation mark (\"):"
@@ -897,6 +968,66 @@ getErrorMessage source p = case p of
         , LineExerpt <| pointAtCode source badElement
         , PlainText "I'm not quite sure what you meant to put here.  If it was meant to be a string, maybe try wrapping it in quotation marks?"
         ]
+    ForbiddenCharacter                {charPos}                            ->
+        let
+            char = getTextUnderRange (charPos, charPos) source
+                |> String.toList
+                |> List.head
+                |> withDefault '\u{202e}'
+            charHex = toHex <| toCode char
+            escapedChar = String.concat ["\\u{", charHex, "}"]
+            sampleString = "myNode \"key\"=\"Hello " ++ escapedChar ++ " world!\"..."
+            highlightStart = 20
+            highlightEnd = highlightStart + String.length escapedChar
+            newExerpt = {lineNo = 0, highlightStart = highlightStart, highlightEnd = highlightEnd, exerpt = sampleString}
+        in
+            [ PlainText "While trying to parse this document, I encountered a character ("
+            , Emphasized ("U+" ++ charHex)
+            , PlainText ") that the KDL specification has banned from being used literally in any part of a KDL document.  The character shows up somewhere near here:"
+            , LineExerpt <| pointAtCode source charPos
+            , PlainText "Unfortunately, many characters, such as characters for right-to-left text or a few unicode control characters, aren't allowed here.  You can still use them in a string, if you'd like, but you'll have to use unicode escapes, like this:"
+            , LineExerpt newExerpt
+            ]
+    UnrecognizedKeyword               {keywordLoc}                         ->
+        let
+            keywordText = getTextUnderRange keywordLoc source
+            lowerKeywordText = String.toLower keywordText
+        in
+            [ PlainText "I seem to have encountered a keyword I don't recognize!"
+            , LineExerpt <| exerptCode source keywordLoc
+            , PlainText "I was expecting to see a keyword like "
+            , Emphasized "#true"
+            , PlainText " or "
+            , Emphasized "#nan"
+            , PlainText " or "
+            , Emphasized "#null"
+            , PlainText ", but instead I saw "
+            , Emphasized (getTextUnderRange keywordLoc source)
+            , PlainText "\n\nIf you meant to represent this as a string, make sure you surround it with double-quotes (\") so that I don't get confused.  If instead you meant to make a raw string (e.g. "
+            , Emphasized "#\"She said \"hello!\" to her friend\"#"
+            , PlainText ") don't forget that double-quote after your pound sign (#).  Otherwise, check to make sure you didn't make a typo!"
+            ] ++ (if maybe False (k True) <| identifyKeyword lowerKeywordText
+                then
+                    [ PlainText "\n\nP.S. It looks like "
+                    , Emphasized ("#" ++ lowerKeywordText)
+                    , PlainText " (the lowercase version of what you typed) is a valid keyword.  Is that what you meant?"
+                    ]
+                else [])
+    ForbiddenBareString               {strLoc}                            ->
+        [ PlainText "Something you were trying to write here looks a little bit ambiguous to me:"
+        , LineExerpt <| exerptCode source strLoc
+        , PlainText "I suspect that you were actually trying to use the special value "
+        , Emphasized ("#" ++ getTextUnderRange strLoc source)
+        , PlainText " and accidently just wrote "
+        , Emphasized (getTextUnderRange strLoc source)
+        , PlainText ", but as you've written it, this actually means the bare string "
+        , Emphasized <| "\"" ++ (getTextUnderRange strLoc source) ++ "\""
+        , PlainText ".  To prevent confusion, the spec says that this specific word can't be used in a bare identifier, so this is an error.\n\nTo fix this problem, you just need to decide whether you want the special value "
+        , Emphasized ("#" ++ getTextUnderRange strLoc source)
+        , PlainText ", or the string "
+        , Emphasized <| "\"" ++ (getTextUnderRange strLoc source) ++ "\""
+        , PlainText ", then use the unambiguous version."
+        ]
 
 messageToString : Message -> String
 messageToString =
@@ -908,7 +1039,9 @@ messageToString =
             LineExerpt {lineNo, highlightStart, highlightEnd, exerpt} ->
                 let
                     lineNoStr = String.fromInt lineNo
-                    linePrefix = String.repeat (5 - String.length lineNoStr) " " ++ lineNoStr ++ " | "
+                    linePrefix = if lineNo > 0
+                        then String.repeat (5 - String.length lineNoStr) " " ++ lineNoStr ++ " | "
+                        else String.repeat 8 " "
                 in String.concat
                     [ "\n\n"
                     , linePrefix

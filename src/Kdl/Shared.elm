@@ -1,6 +1,6 @@
-module Kdl.Shared exposing (identifierCharacter, initialCharacter, unicodeNewline, unicodeSpace)
+module Kdl.Shared exposing (bom, identifierCharacter, initialCharacter, isAnyWhitespace, unicodeNewline, unicodeScalarValue, unicodeSpace, legalCharacter)
 
-import Kdl.Util exposing (andf, flip)
+import Kdl.Util exposing (andf, orf, flip)
 
 import Char exposing (isDigit)
 import List exposing (member)
@@ -25,7 +25,7 @@ unicodeSpace = Char.toCode >> flip member
     , 0x202F
     , 0x205F
     , 0x3000
-    , 0xFEFF -- BOM
+    , 0x000B
     ]
 
 unicodeNewline : Char -> Bool
@@ -38,11 +38,51 @@ unicodeNewline = Char.toCode >> flip member
     , 0x2029
     ]
 
+unicodeScalarValue : Char -> Bool
+unicodeScalarValue c =
+    let
+        cp = Char.toCode c
+    in
+        (0 <= cp && cp <= 0xD7FF)
+        ||  (0xE000 <= cp && cp <= 0x10FFFF)
+
+isAnyWhitespace : Char -> Bool
+isAnyWhitespace = orf unicodeSpace unicodeNewline
+
+bom : Char
+bom = '\u{FeFF}'
+
+legalCharacter : Char -> Bool
+legalCharacter =
+    let
+        over20OrWhitespace = orf (Char.toCode >> (<=) 0x20) isAnyWhitespace
+        notTooBig = Char.toCode >> (>=) 0x10FFFF
+        notDelete = (/=) '\u{007F}'
+        unicodeDirectionControls =
+            [ '\u{2066}'
+            , '\u{2067}'
+            , '\u{2068}'
+            , '\u{202A}'
+            , '\u{202B}'
+            , '\u{202D}'
+            , '\u{202E}'
+            , '\u{2069}'
+            , '\u{202C}'
+            ]
+        notBOM = (/=) bom
+        notUnicodeDirectionControl = not << flip member unicodeDirectionControls
+    in over20OrWhitespace
+        |> andf notTooBig
+        |> andf notDelete
+        |> andf notUnicodeDirectionControl
+        |> andf unicodeScalarValue
+        |> andf notBOM
+
 identifierCharacter : Char -> Bool
 identifierCharacter c =
     let
         code = Char.toCode c
-        bannedChars = ['\\', '/', '(', ')', '{', '}', '<', '>', ';', '[', ']', '=', ',', '"']
+        bannedChars = ['\\', '/', '(', ')', '{', '}', ';', '[', ']', '=', '"', '#']
     in code > 0x20 && code <= 0x10FFFF && (not <| member c bannedChars)
 
 initialCharacter : Char -> Bool

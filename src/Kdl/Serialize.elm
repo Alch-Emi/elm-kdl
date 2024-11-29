@@ -8,6 +8,7 @@ import BigInt
 import BigRational exposing (BigRational)
 import BigInt exposing (BigInt)
 import Dict
+import Kdl exposing (KdlNumber(..))
 
 ---------------[ Bags ]-------------------------------
 
@@ -173,12 +174,6 @@ serializeNumberVal n =
         then BigInt.toString intPart |> singletonBag
         else aux n 0
 
-serializeBoolVal : Bool -> Line
-serializeBoolVal v = singletonBag <| if v then "true" else "false"
-
-serializeNullVal : Bag String
-serializeNullVal = singletonBag "null"
-
 serializeType : Maybe String -> Line
 serializeType t_ = case t_ of
     Just t -> concatBags
@@ -194,9 +189,13 @@ serializeVal {typestr, contents} =
         typeSerialized = serializeType typestr
         contentsSerialized = case contents of
             StringVal s -> serializeStrVal s
-            NumberVal n -> serializeNumberVal n
-            BoolVal b -> serializeBoolVal b
-            NullVal -> serializeNullVal
+            NumberVal PositiveInfinity -> singletonBag "#inf"
+            NumberVal NegativeInfinity -> singletonBag "#-inf"
+            NumberVal NaN -> singletonBag "#nan"
+            NumberVal (Rational n) -> serializeNumberVal n
+            BoolVal True -> singletonBag "#true"
+            BoolVal False -> singletonBag "#false"
+            NullVal -> singletonBag "#null"
     in concatBags [typeSerialized, contentsSerialized]
 
 serializeIdent : String -> Line

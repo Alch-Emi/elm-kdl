@@ -1,6 +1,8 @@
-module Kdl.Util exposing (andf, flip, k, liftA2f, maybe, orf, parseRadix, result, sequenceListMaybe)
+module Kdl.Util exposing (andf, flip, k, liftA2f, maybe, orf, parseRadix, result, sequenceListMaybe, toHex)
 
 import BigInt exposing (BigInt)
+import List exposing (drop, head)
+import Maybe exposing (withDefault)
 
 liftA2f : (a -> b -> o) -> (i -> a) -> (i -> b) -> i -> o
 liftA2f g f1 f2 a = g (f1 a) (f2 a)
@@ -65,3 +67,17 @@ parseRadix radix = let bigRadix = BigInt.fromInt radix in
         ( List.map BigInt.fromInt
         >> List.foldl (\v acc -> BigInt.add v (BigInt.mul bigRadix acc)) (BigInt.fromInt 0)
         )
+
+toHexDigit : Int -> Char
+toHexDigit = flip drop (String.toList "0123456789abcdef") >> head >> withDefault 'X'
+
+toHexAux : List Char -> Int -> List Char
+toHexAux acc i =
+    if i == 0
+        then acc
+        else toHexAux (toHexDigit (modBy 16 i) :: acc) (i // 16)
+
+toHex : Int -> String
+toHex i = case toHexAux [] i of
+    [] -> "0"
+    chars -> String.fromList chars

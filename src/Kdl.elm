@@ -1,4 +1,4 @@
-module Kdl exposing (LocatedNode, LocatedValue, Node(..), Position, SourceRange, Value, ValueContents(..))
+module Kdl exposing (KdlNumber(..), LocatedNode, LocatedValue, Node(..), Position, SourceRange, Value, ValueContents(..))
 
 import Dict exposing (Dict)
 import BigRational exposing (BigRational)
@@ -14,9 +14,15 @@ type Node l v =
 
 type ValueContents
     = StringVal String
-    | NumberVal BigRational
+    | NumberVal KdlNumber
     | BoolVal Bool
     | NullVal
+
+type KdlNumber
+    = Rational BigRational
+    | PositiveInfinity
+    | NegativeInfinity
+    | NaN
 
 type alias Value l v =
     { location: l
