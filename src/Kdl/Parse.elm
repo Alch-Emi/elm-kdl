@@ -620,7 +620,7 @@ linespace = oneOf
 parseAstComment : Parser Context PProblem (a -> Maybe a)
 parseAstComment =
     symbol (Token "/-" (PExpecting <| "node comment"))
-    |. star k () nodespace
+    |. star k () linespace
     |> Parser.map (k (k Nothing))
     |> optional Just
     |> backtrackable
