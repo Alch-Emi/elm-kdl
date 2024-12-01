@@ -2,7 +2,7 @@ module Kdl.Parse exposing (parse, Problem(..), Message, MessageComponent(..), ge
 
 import Kdl exposing (KdlNumber(..), Node(..), Value, ValueContents(..), LocatedNode, LocatedValue, Position, SourceRange)
 import Kdl.Shared exposing (bom, identifierCharacter, initialCharacter, isAnyWhitespace, legalCharacter, nameWhitespace, unicodeNewline, unicodeScalarValue, unicodeSpace)
-import Kdl.Util exposing (andf, flip, k, maybe, orf, parseRadix, result, toHex, traverseListResult, unlines)
+import Kdl.Util exposing (either, flip, k, liftA2f, maybe, orf, parseRadix, result, toHex, traverseListResult, unlines)
 
 import BigInt exposing (BigInt)
 import BigRational exposing (BigRational)
@@ -28,7 +28,8 @@ type PProblem
     | PUnclosedString
     | PUnclosedType
     | PUnrecognizedKeyword
-    | PForbiddenBareString
+    | PBareStringConfusableWithKeyword
+    | PBareStringConfusableWithNumber
     | PMalformedRawStringOpening
     | PUnclosedMultilineComment
     | PUnclosedChildBlock
@@ -479,25 +480,30 @@ parseValue =
 signChar : Char -> Bool
 signChar = flip member ['+', '-']
 
+dot : Char -> Bool
+dot = (==) '.'
+
+checkForIllegalKeywords : String -> Maybe PProblem
+checkForIllegalKeywords =
+    let
+        illegalStarts = oneOf
+            [ chompIf dot ()
+            , chompIf signChar ()
+                |. optional () (chompIf dot ())
+            ]
+            |. chompIf isDigit ()
+        checkIllegalStart = Parser.run illegalStarts >> result (k Nothing) (k (Just PBareStringConfusableWithNumber))
+        checkKeyword = identifyKeyword >> Maybe.map (k PBareStringConfusableWithKeyword)
+    in liftA2f either checkIllegalStart checkKeyword
+
 parseBareString : List Char -> Parser c PProblem String
 parseBareString possibleFollowingCharacters = oneOf
     [ variable
-        { start = andf (not << signChar) initialCharacter
+        { start = initialCharacter
         , inner = identifierCharacter
         , reserved = Set.empty
         , expecting = PExpecting "variable"
         }
-    , chompIf signChar (PExpecting "-variable")
-        |. (
-            variable
-                { start = initialCharacter
-                , inner = identifierCharacter
-                , reserved = Set.empty
-                , expecting = PExpecting "variable"
-                }
-                |> optional ""
-        )
-        |> getChompedString
     ]
     |. lookAhead1 True PInvalidIdentifier
         (
@@ -505,10 +511,11 @@ parseBareString possibleFollowingCharacters = oneOf
             |> orf unicodeNewline
             |> orf unicodeSpace
         )
+    |> getChompedString
     |> Parser.andThen (\s ->
-        case identifyKeyword s of
+        case checkForIllegalKeywords s of
             Nothing -> succeed s
-            Just _ -> problem PForbiddenBareString
+            Just p -> problem p
     )
 
 parseString : List Char -> Parser Context PProblem String
@@ -747,7 +754,8 @@ type Problem
     | UnfinishedEscline {backslashLoc: Position, nextCharOrEof: Position}
     | MalformedNodeComponent {nodeStart: Position, badElement: Position}
     | ForbiddenCharacter {charPos: Position}
-    | ForbiddenBareString {strLoc: SourceRange}
+    | BareStringConfusableWithKeyword {strLoc: SourceRange}
+    | BareStringConfusableWithNumber {strLoc: SourceRange}
     | UnrecognizedKeyword {keywordLoc: SourceRange}
     | NewlineInQuotedString {strLoc: SourceRange, newlineLoc: Position}
     | MultilineStringTrailingCharacters {strLoc: SourceRange, trailingChars: SourceRange}
@@ -881,10 +889,14 @@ translateDeadEnd {row, col, contextStack, problem} =
                 ContextFrame WithinKeyword keywordStart :: _ ->
                     UnrecognizedKeyword {keywordLoc = (keywordStart, (row, col - 1))}
                 _ -> Unexpected "Encountered a PUnrecognizedKeyword while not parsing a keyword"
-            PForbiddenBareString -> case myContextStack of
+            PBareStringConfusableWithKeyword -> case myContextStack of
                 ContextFrame WithinString identStart :: _ ->
-                    ForbiddenBareString {strLoc = (identStart, (row, col - 1))}
-                _ -> Unexpected "Encountered a PForbiddenBareString while not parsing a string"
+                    BareStringConfusableWithKeyword {strLoc = (identStart, (row, col - 1))}
+                _ -> Unexpected "Encountered a PBareStringConfusableWithKeyword while not parsing a string"
+            PBareStringConfusableWithNumber -> case myContextStack of
+                ContextFrame WithinString identStart :: _ ->
+                    BareStringConfusableWithNumber {strLoc = (identStart, (row, col - 1))}
+                _ -> Unexpected "Encountered a PBareStringConfusableWithNumber while not parsing a string"
 
 type MessageComponent
     = PlainText String
@@ -919,6 +931,33 @@ exerptCode source ((startRow, startCol) as start, (endRow, endCol) as end) =
         newEndCol = trueEndCol - dropCharsLeft
         clippedString = (if clipStart then "..." else "") ++ (String.slice exerptStart exerptEnd interestingLine) ++ (if clipEnd then "..." else "")
     in {lineNo = startRow, highlightStart = newStartCol, highlightEnd = newEndCol, exerpt = clippedString}
+
+editThenExerpt : String -> String -> SourceRange -> Exerpt
+editThenExerpt source replaceWith ((startRow, startCol) as start, (endRow, endCol)) =
+    let
+        sourceLines = String.lines source
+        preLines = List.take (startRow - 1) sourceLines
+        postLines = List.drop endRow sourceLines
+        getLine n s = List.drop (n - 1) s |> List.head |> withDefault ""
+        firstLine = getLine startRow sourceLines
+        lastLine = getLine endRow sourceLines
+        preText = String.left (startCol - 1) firstLine
+        postText = String.dropLeft endCol lastLine
+        linesInOriginalHighlight = 1 + endRow - startRow
+        newHighlightLines = String.lines replaceWith
+        linesInNewHighlight = List.length newHighlightLines
+        linesAddedToHighlight = linesInNewHighlight - linesInOriginalHighlight
+        lengthOfLastLineInNewHighlight = getLine linesInNewHighlight newHighlightLines |> String.length
+        newEndRow = endRow + linesAddedToHighlight
+        newEndCol = if linesInNewHighlight > 1
+            then lengthOfLastLineInNewHighlight
+            else startCol + lengthOfLastLineInNewHighlight - 1
+        recombinedSource = (List.concat >> unlines)
+            [ preLines
+            , [String.concat [preText, replaceWith, postText]]
+            , postLines
+            ]
+    in exerptCode recombinedSource (start, (newEndRow, newEndCol))
 
 pointAtCode : String -> Position -> Exerpt
 pointAtCode source pos = exerptCode source (pos, pos)
@@ -1134,7 +1173,7 @@ getErrorMessage source p = case p of
                     , PlainText " (the lowercase version of what you typed) is a valid keyword.  Is that what you meant?"
                     ]
                 else [])
-    ForbiddenBareString               {strLoc}                            ->
+    BareStringConfusableWithKeyword               {strLoc}                            ->
         [ PlainText "Something you were trying to write here looks a little bit ambiguous to me:"
         , LineExerpt <| exerptCode source strLoc
         , PlainText "I suspect that you were actually trying to use the special value "
@@ -1148,6 +1187,13 @@ getErrorMessage source p = case p of
         , PlainText ", or the string "
         , Emphasized <| "\"" ++ (getTextUnderRange strLoc source) ++ "\""
         , PlainText ", then use the unambiguous version."
+        ]
+    BareStringConfusableWithNumber                {strLoc}                            ->
+        [ PlainText "Something you were trying to write here looks a little bit ambiguous to me:"
+        , LineExerpt <| exerptCode source strLoc
+        , PlainText "As it's written, this would be a keyword, not a number, but it looks similar enough that the KDL specification forbids it.  If you want to use this as a keyword, surround it in quotes, like this:"
+        , LineExerpt <| editThenExerpt source ("\"" ++ (getTextUnderRange strLoc source) ++ "\"") strLoc
+        , PlainText "If you meant for it to be a number, check to make sure that you're number is written correctly."
         ]
     NewlineInQuotedString                   {strLoc{-, newlineLoc-}}       ->
         let

@@ -1,4 +1,4 @@
-module Kdl.Util exposing (andf, flip, k, liftA2f, maybe, orf, parseRadix, result, sequenceListMaybe, toHex, traverseListResult, unlines)
+module Kdl.Util exposing (andf, either, flip, k, liftA2f, maybe, orf, parseRadix, result, sequenceListMaybe, toHex, traverseListResult, unlines)
 
 import BigInt exposing (BigInt)
 import List exposing (drop, head)
@@ -89,3 +89,6 @@ toHex i = case toHexAux [] i of
 
 unlines : List String -> String
 unlines = String.join "\n"
+
+either : Maybe a -> Maybe a -> Maybe a
+either = maybe identity (Just >> k)
