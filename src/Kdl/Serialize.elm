@@ -108,7 +108,7 @@ quoteB : Bag String
 quoteB = singletonBag "\""
 
 eB : Bag String
-eB = singletonBag "e"
+eB = singletonBag "E"
 
 dotB : Bag String
 dotB = singletonBag "."
@@ -173,6 +173,7 @@ serializeNumberVal n =
                 else concatBags
                     [ BigRational.toDecimalString 30 rat |> singletonBag
                     , eB
+                    , singletonBag <| if exp > 0 then "+" else ""
                     , String.fromInt exp |> singletonBag
                     ]
     in if BigRational.compare fractionalPart zero == EQ
