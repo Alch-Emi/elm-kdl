@@ -1,8 +1,8 @@
 module Kdl.Parse exposing (parse, Problem(..), Message, MessageComponent(..), getErrorMessage, messageToString)
 
 import Kdl exposing (KdlNumber(..), Node(..), Value, ValueContents(..), LocatedNode, LocatedValue, Position, SourceRange)
-import Kdl.Shared exposing (bom, identifierCharacter, initialCharacter, isAnyWhitespace, legalCharacter, unicodeNewline, unicodeScalarValue, unicodeSpace)
-import Kdl.Util exposing (andf, flip, k, maybe, orf, parseRadix, result, toHex)
+import Kdl.Shared exposing (bom, identifierCharacter, initialCharacter, isAnyWhitespace, legalCharacter, nameWhitespace, unicodeNewline, unicodeScalarValue, unicodeSpace)
+import Kdl.Util exposing (andf, flip, k, maybe, orf, parseRadix, result, toHex, traverseListResult, unlines)
 
 import BigInt exposing (BigInt)
 import BigRational exposing (BigRational)
@@ -37,6 +37,7 @@ type PProblem
     | PInvalidIdentifier
     | PUnfinishedEscline
     | PMalformedNumber
+    | PPrelocated Problem
 
 type StringType
     = Raw
@@ -69,6 +70,15 @@ type Context
     | WithinEscline
     | WithinKeyword
     | WithinPropValue SourceRange
+
+type StrToken
+    = STNormal
+    | STEscaped
+
+type StrLexeme = StrLexeme StrToken SourceRange String
+
+mkStrLexeme : StrToken -> Position -> String -> Position -> StrLexeme
+mkStrLexeme token start val (endrow, endcol) = StrLexeme token (start, (endrow, endcol - 1)) val
 
 stringTypeToString : StringType -> String
 stringTypeToString s = case s of
@@ -153,41 +163,149 @@ parseEscapeCode c = case c of
         then chompWhile isAnyWhitespace |> Parser.map (k "")
         else  problem (PUnrecognizedEscapeCode c)
 
-parseEscapeSequence : Parser Context PProblem String
+parseEscapeSequence : Parser Context PProblem StrLexeme
 parseEscapeSequence =
-    succeed parseEscapeCode
+    succeed (mkStrLexeme STEscaped)
+    |= getPosition
     |. symbol (Token "\\" <| PExpecting "backslash")
     |= (
         chompIf (k True) PUnclosedString
         |> getChompedString
-        |> Parser.map (String.uncons >> withDefault ('_', "") >> Tuple.first)
+        |> Parser.andThen (String.uncons >> withDefault ('_', "") >> Tuple.first >> parseEscapeCode)
     )
-    |> andThen identity
+    |= getPosition
     |> inContext WithinStrEscape
 
-parseQuotedStringSegment : Parser Context PProblem String
+parseQuotedStringSegment : Parser Context PProblem StrLexeme
 parseQuotedStringSegment =
     let
-        plainStringChar = not << flip member ['"', '\\']
+        plainStringChar = not << (orf (flip member ['"', '\\']) unicodeNewline)
     in
     oneOf
         [
-            chompIf plainStringChar (PExpecting "string character")
-            |. chompWhile plainStringChar
-            |> getChompedString
+            succeed (mkStrLexeme STNormal)
+            |= getPosition
+            |= (
+                chompIf plainStringChar (PExpecting "string character")
+                |. chompWhile plainStringChar
+                |> getChompedString
+            )
+            |= getPosition
         , parseEscapeSequence
         ]
 
-parseQuotedStringInnards : Parser Context PProblem String
-parseQuotedStringInnards = star (++) "" parseQuotedStringSegment
+processWhitespaceEscapes : List (List StrLexeme) -> List (List StrLexeme)
+processWhitespaceEscapes = (List.map << List.filter) (\l -> case l of
+        StrLexeme STEscaped _ "" -> False
+        _ -> True
+    )
+
+endOfLexemeLine : List StrLexeme -> Maybe Position
+endOfLexemeLine line = line
+    |> List.drop (List.length line - 1)
+    |> List.head
+    |> Maybe.map (\(StrLexeme _ (_, end) _) -> end)
+
+processMultilineString : List (List StrLexeme) -> Result (SourceRange -> Problem) (List (List StrLexeme))
+processMultilineString lines =
+    case lines of
+        [] -> Ok []
+        [singleLine] -> Ok [singleLine]
+        [] :: firstLine :: otherLines ->
+            let
+                lastLine =
+                    List.drop (List.length otherLines - 1) otherLines
+                    |> List.head
+                    |> withDefault firstLine
+                firstNonwhitespace whitespaceSeen s = flip Maybe.andThen (String.uncons s) (\(c, rest) -> 
+                        if unicodeSpace c
+                            then firstNonwhitespace (whitespaceSeen + 1) rest
+                            else Just whitespaceSeen
+                    )
+                endOfLastLine = endOfLexemeLine lastLine
+                whitespacePrefixOrFirstGarbageChar = case lastLine of
+                    [] -> Ok ""
+                    [StrLexeme STNormal ((lrow, lcol), _) val] -> case firstNonwhitespace 0 val of
+                        Nothing -> Ok val
+                        Just garbageStart -> Err (lrow, lcol + garbageStart)
+                    StrLexeme STNormal ((lrow, lcol), _) val :: _ -> case firstNonwhitespace 0 val of
+                        Nothing -> Err (lrow, lcol + String.length val)
+                        Just garbageStart -> Err (lrow, lcol + garbageStart)
+                    StrLexeme STEscaped (garbageStart, _) _ :: _ -> Err garbageStart
+                whitespacePrefixOrErr = flip Result.mapError
+                    whitespacePrefixOrFirstGarbageChar
+                    (\firstGarbageChar strLoc ->
+                        MultilineStringTrailingCharacters {strLoc = strLoc, trailingChars = (firstGarbageChar, withDefault firstGarbageChar endOfLastLine)}
+                    )
+                isAllWhitespace l = case l of
+                    [] -> True
+                    StrLexeme STEscaped _ _ :: _ -> False
+                    StrLexeme STNormal _ contents :: rest -> case firstNonwhitespace 0 contents of
+                        Nothing -> isAllWhitespace rest
+                        Just _ -> False
+                dedentLine prefix line =
+                    if isAllWhitespace line
+                        then Ok []
+                    else case String.uncons prefix of
+                        Nothing -> Ok line
+                        Just (firstPrefixChar, remainingPrefix) -> case (line) of
+                            [] -> Ok []
+                            StrLexeme STEscaped ((gsrow, gscol) as garbageStart, _) _ :: _ -> Err (\strLoc ->
+                                MultilineStringLineLacksPrefix {strLoc = strLoc, violatingChars = (garbageStart, (gsrow, gscol + (String.length prefix) - 1))})
+                            StrLexeme STNormal ((row, lCol) as lexemeStart, lexemeEnd) content :: rest -> case String.uncons content of
+                                Nothing -> dedentLine prefix rest
+                                Just (firstLineChar, remainingContent) ->
+                                    if firstPrefixChar == firstLineChar
+                                        then dedentLine remainingPrefix (StrLexeme STNormal ((row, lCol + 1), lexemeEnd) remainingContent :: rest)
+                                    else if unicodeSpace firstPrefixChar && unicodeSpace firstLineChar
+                                        then Err (\strLoc ->
+                                            MultilineStringMismatchedPrefixSpace {strLoc = strLoc, offendingChar = lexemeStart, expected = firstPrefixChar, got = firstLineChar}
+                                        )
+                                        else Err (\strLoc ->
+                                            MultilineStringLineLacksPrefix {strLoc = strLoc, violatingChars = (lexemeStart, (row, lCol + (String.length remainingPrefix)))}
+                                        )
+                dedentAllLines = dedentLine >> traverseListResult
+            in Result.andThen (flip dedentAllLines (firstLine :: otherLines)) whitespacePrefixOrErr
+        nonEmptyFirstLine :: _ :: _ ->
+            let
+                endOfFirstLine = endOfLexemeLine nonEmptyFirstLine |> withDefault (0, 0)
+            in Err (\strLoc -> NewlineInQuotedString {strLoc=strLoc, newlineLoc=endOfFirstLine})
+
+lexemeToString : StrLexeme -> String
+lexemeToString l = case l of
+    StrLexeme _ _ c -> c
+
+lexemesToString : List (List StrLexeme) -> String
+lexemesToString = List.map (List.map lexemeToString >> String.concat) >> unlines
+
+parseQuotedStringInnards : Parser Context PProblem (List (List StrLexeme))
+parseQuotedStringInnards =
+    let
+        parseLine = starL parseQuotedStringSegment
+    in succeed (::)
+        |= parseLine
+        |= starL (succeed identity |. newline |= parseLine)
 
 parseQuotedString : Parser Context PProblem String
 parseQuotedString =
-    succeed identity
-    |. symbol (Token "\"" <| PExpecting "opening quote")
-    |= parseQuotedStringInnards
-    |. symbol (Token "\"" PUnclosedString)
-    |> inContext WithinQuotedString
+    let
+        f : Position -> List (List StrLexeme) -> Position -> Parser Context PProblem String
+        f openPos contents (closeRow, closeCol) =
+            contents
+            |> processWhitespaceEscapes
+            |> processMultilineString
+            |> Result.map lexemesToString
+            |> Result.mapError ((|>) (openPos, (closeRow, closeCol - 1)) >> PPrelocated)
+            |> result problem succeed
+    in
+        succeed f
+        |= getPosition
+        |. symbol (Token "\"" <| PExpecting "opening quote")
+        |= parseQuotedStringInnards
+        |. symbol (Token "\"" PUnclosedString)
+        |= getPosition
+        |> Parser.andThen identity
+        |> inContext WithinQuotedString
 
 parseRawString : Parser Context PProblem String
 parseRawString =
@@ -611,7 +729,6 @@ findInvalidChars =
 type Problem
     = Unexpected String
     | UnrecognizedEscapeCode {strLoc: Position, escLoc: SourceRange, char: Char}
-    | AttemptingToEscapeNewlineInString {strLoc: Position, backslashLoc: Position}
     | UnicodeEscapeNotOpened {strLoc: Position, escLoc: SourceRange}
     | UnicodeEscapeEmpty {strLoc: Position, escLoc: SourceRange}
     | UnicodeEscapeInvalidCharacters {strLoc: Position, escLoc: SourceRange}
@@ -632,6 +749,10 @@ type Problem
     | ForbiddenCharacter {charPos: Position}
     | ForbiddenBareString {strLoc: SourceRange}
     | UnrecognizedKeyword {keywordLoc: SourceRange}
+    | NewlineInQuotedString {strLoc: SourceRange, newlineLoc: Position}
+    | MultilineStringTrailingCharacters {strLoc: SourceRange, trailingChars: SourceRange}
+    | MultilineStringLineLacksPrefix {strLoc: SourceRange, violatingChars: SourceRange}
+    | MultilineStringMismatchedPrefixSpace {strLoc: SourceRange, offendingChar: Position, expected: Char, got: Char}
 
 type alias DefaultContextFrame = {row: Int, col: Int, context: Context}
 type MyContextFrame = ContextFrame Context Position
@@ -659,11 +780,10 @@ translateDeadEnd {row, col, contextStack, problem} =
     in
         case problem of
             PExpecting s -> Unexpected ("Unexpected problem which resulted in attempting to interpret a character as a " ++ s)
+            PPrelocated p -> p
             PUnrecognizedEscapeCode c -> case myContextStack of
                 ContextFrame WithinStrEscape escStart :: ContextFrame WithinQuotedString strLoc :: _ ->
-                    if c == '\n'
-                        then AttemptingToEscapeNewlineInString {strLoc=strLoc, backslashLoc=escStart}
-                        else UnrecognizedEscapeCode {strLoc=strLoc, escLoc=(escStart, (row, col - 1)), char=c}
+                    UnrecognizedEscapeCode {strLoc=strLoc, escLoc=(escStart, (row, col - 1)), char=c}
                 _ -> Unexpected "Encountered a PUnrecognizedEscapeCode error while not parsing an escape code in a string"
             PUnicodeEscapeNotOpened -> case myContextStack of
                 ContextFrame WithinStrEscape escStart :: ContextFrame WithinQuotedString strLoc :: _ ->
@@ -818,6 +938,12 @@ getTextUnderRange ((startRow, startCol), (endRow, endCol)) source =
         h :: t -> String.dropLeft (startCol - 1) h :: (mapLast (String.left endCol) t)
             |> String.join "\n"
 
+multilineStringGuidance : Message
+multilineStringGuidance =
+    [ PlainText "The multi-line string syntax can take a little bit of getting used to, but if you want to read up on it, you can check out the official specification here:\n"
+    , Link "https://github.com/kdl-org/kdl/blob/76a1de5/SPEC.md#multi-line-strings"
+    ]
+
 getErrorMessage : String -> Problem -> Message
 getErrorMessage source p = case p of
     Unexpected msg ->
@@ -831,11 +957,6 @@ getErrorMessage source p = case p of
         ] ++  if member char uppercaseEscapeCodes
             then [PlainText <| "That said, there is a valid escape code with a lowercase letter " ++ String.fromChar (Char.toLower char) ++ ".  Maybe that's what you meant to use?"]
             else [PlainText "For a list of supported escape codes, see this link:\n", Link "https://github.com/kdl-org/kdl/blob/270c60c/SPEC.md#quoted-string"]
-    AttemptingToEscapeNewlineInString {{-strLoc,-} backslashLoc}               ->
-        [ PlainText "While parsing a string, I saw an backslash followed by a newline, right here:"
-        , LineExerpt <| pointAtCode source backslashLoc
-        , PlainText "If you meant to escape the newline so that it'll show up in the string, you don't actually need to include the backslash!  In KDL, all strings are by default multi-line strings.  If you want a literal backslash instead, make sure you use two backslashes, so that the first escapes the second."
-        ]
     UnicodeEscapeNotOpened            {{-strLoc,-} escLoc}                     ->
         [ PlainText "While parsing a string, I saw a unicode escape code here:"
         , LineExerpt <| exerptCode source escLoc
@@ -1028,27 +1149,79 @@ getErrorMessage source p = case p of
         , Emphasized <| "\"" ++ (getTextUnderRange strLoc source) ++ "\""
         , PlainText ", then use the unambiguous version."
         ]
+    NewlineInQuotedString                   {strLoc{-, newlineLoc-}}       ->
+        let
+            ((startRow, _), (endRow, _) as strEnd) = strLoc
+            stringTotalLines = endRow - startRow + 1
+        in
+            [ PlainText "I was trying to parse a string here:"
+            , LineExerpt <| exerptCode source strLoc
+            , PlainText "But the only closing double-quote (\") I see is "
+            , PlainText <| String.fromInt (stringTotalLines - 1)
+            , PlainText " lines down, here:"
+            , LineExerpt <| pointAtCode source strEnd
+            , PlainText "Did you mean for this to be a multiline string?  If so, recall that the opening quote of a multi-line string must be immediately followed by a newline, and the string itself starts on the next line."
+            , PlainText "\n\nOtherwise, maybe you just forgot to close this string?\n\n"
+            ] ++ multilineStringGuidance
+    MultilineStringTrailingCharacters {{-strLoc, -}trailingChars}         ->
+        [ PlainText "I was trying to parse a multi-line string, but it looks like you've got some trailing characters on the last line:"
+        , LineExerpt <| exerptCode source trailingChars
+        , PlainText "To declare a multi-line string, make sure you leave the last line (the one with the closing double-quote) as just whitespace.  I use that whitespace to help calibrate how much whitespace to trim off of the prior lines, so there can't be any non-whitespace characters there or I'll get confused.\n\n"
+        ] ++ multilineStringGuidance
+    MultilineStringLineLacksPrefix    {strLoc, violatingChars}            ->
+        let
+            (_, (strEndRow, _) as strEnd) = strLoc
+        in
+            [ PlainText "I was trying to parse a multi-line string, but one of the lines doesn't have enough leading whitespace:"
+            , LineExerpt <| exerptCode source violatingChars
+            , PlainText "When parsing a multi-line string, every non-empty line has to start with at least as much whitespace as precedes the closing double-quote, which gets stripped off as part of parsing.\n\n"
+            , PlainText "For reference, your closing double-quote has this much whitespace:"
+            , LineExerpt <| exerptCode source ((strEndRow, 1), strEnd)
+            ] ++ multilineStringGuidance
+    MultilineStringMismatchedPrefixSpace {strLoc, offendingChar, expected, got} ->
+        let
+            (_, (strEndRow, _)) = strLoc
+            (offendingRow, offset) = offendingChar
+            expectedName = nameWhitespace expected
+            gotName = nameWhitespace got
+        in
+            [ PlainText "I was trying to parse a multi-line string, but the leading whitespace on some of your lines is mismatched.  In particular, there's a "
+            , PlainText gotName
+            , PlainText " at this point on line "
+            , PlainText <| String.fromInt offendingRow
+            , PlainText ":"
+            , LineExerpt <| pointAtCode source offendingChar
+            , PlainText "But at the same point in the whitespace before the closing double quote, there's a "
+            , PlainText expectedName
+            , PlainText ":"
+            , LineExerpt <| pointAtCode source (strEndRow, offset)
+            , PlainText "When you're writing a multi-line string, it's important that the whitespace preceding each line is exactly the same.\n\n"
+            ] ++ multilineStringGuidance
 
-messageToString : Message -> String
+messageToString : Int -> Message -> String
 messageToString =
     let
-        showMessageComponent c = case c of
+        countTabs = String.toList >> List.filter ((==) '\t') >> List.length
+        showMessageComponent tabWidth c = case c of
             PlainText t -> t
             Emphasized t -> t
             Link l -> l
             LineExerpt {lineNo, highlightStart, highlightEnd, exerpt} ->
                 let
                     lineNoStr = String.fromInt lineNo
+                    highlightLength = highlightEnd - highlightStart
                     linePrefix = if lineNo > 0
                         then String.repeat (5 - String.length lineNoStr) " " ++ lineNoStr ++ " | "
                         else String.repeat 8 " "
+                    tabsBeforeHighlight = countTabs (String.left highlightStart exerpt)
+                    tabsInHighlight = countTabs (String.dropLeft highlightStart exerpt |> String.left highlightLength)
                 in String.concat
                     [ "\n\n"
                     , linePrefix
                     , exerpt
                     , "\n"
-                    , String.repeat (8 + highlightStart) " "
-                    , String.repeat (highlightEnd - highlightStart) "^"
+                    , String.repeat (8 + highlightStart + (tabWidth - 1) * tabsBeforeHighlight) " "
+                    , String.repeat (highlightLength + (tabWidth - 1) * tabsInHighlight) "^"
                     , "\n\n"
                     ]
-    in List.map showMessageComponent >> String.concat
+    in showMessageComponent >> List.map >> ((<<) String.concat)

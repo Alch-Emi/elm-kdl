@@ -19,7 +19,7 @@ view s =
     let
         rightText = case parse s of
             Ok kdl -> serialize kdl
-            Err e -> getErrorMessage s e |> messageToString
+            Err e -> getErrorMessage s e |> messageToString 4
     in div
         [ style "display" "grid"
         , style "grid-template-columns" "1fr 1fr"
@@ -28,12 +28,14 @@ view s =
         [ textarea
             [ onInput identity
             , style "font-family" "mono"
+            , style "tab-size" "4"
             ]
             [ text s
             ]
         , textarea
             [ readonly True
             , style "font-family" "mono"
+            , style "tab-size" "4"
             ]
             [ text rightText
             ]

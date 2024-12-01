@@ -110,6 +110,7 @@ viewPanel name value = div
     , div
         [ style "white-space" "pre"
         , style "font-family" "mono"
+        , style "tab-size"    "4"
         ]
         [ text value
         ]
@@ -128,7 +129,7 @@ viewTest (testName, result) = pair testName <|
                             Nothing -> "<parse should not succeed>"
                         actualResultString = case actualResult of
                             Ok res -> res
-                            Err e -> "<parse error>\n\n" ++ (getErrorMessage inputData e |> messageToString)
+                            Err e -> "<parse error>\n\n" ++ (getErrorMessage inputData e |> messageToString 4)
                         testSuccess = expectedResult == (Result.toMaybe actualResult)
                     in
                         [ summary []

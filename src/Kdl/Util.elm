@@ -1,4 +1,4 @@
-module Kdl.Util exposing (andf, flip, k, liftA2f, maybe, orf, parseRadix, result, sequenceListMaybe, toHex)
+module Kdl.Util exposing (andf, flip, k, liftA2f, maybe, orf, parseRadix, result, sequenceListMaybe, toHex, traverseListResult, unlines)
 
 import BigInt exposing (BigInt)
 import List exposing (drop, head)
@@ -57,6 +57,11 @@ sequenceListMaybe l = case l of
         |> Maybe.map ((::) x)
     Nothing :: _ -> Nothing
 
+traverseListResult : (i -> Result e o) -> List i -> Result e (List o)
+traverseListResult f l = case l of
+    [] -> Ok []
+    e :: rest -> Result.map2 (::) (f e) (traverseListResult f rest)
+
 -- Up to 16
 parseRadix : Int -> String -> Maybe BigInt
 parseRadix radix = let bigRadix = BigInt.fromInt radix in
@@ -81,3 +86,6 @@ toHex : Int -> String
 toHex i = case toHexAux [] i of
     [] -> "0"
     chars -> String.fromList chars
+
+unlines : List String -> String
+unlines = String.join "\n"

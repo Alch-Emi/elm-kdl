@@ -1,6 +1,7 @@
-module Kdl.Shared exposing (bom, identifierCharacter, initialCharacter, isAnyWhitespace, unicodeNewline, unicodeScalarValue, unicodeSpace, legalCharacter)
+module Kdl.Shared exposing (bom, identifierCharacter, initialCharacter, isAnyWhitespace, nameWhitespace, posPlus, unicodeNewline, unicodeScalarValue, unicodeSpace, legalCharacter)
 
-import Kdl.Util exposing (andf, orf, flip)
+import Kdl exposing (Position)
+import Kdl.Util exposing (andf, orf, flip, toHex)
 
 import Char exposing (isDigit)
 import List exposing (member)
@@ -84,6 +85,32 @@ identifierCharacter c =
         code = Char.toCode c
         bannedChars = ['\\', '/', '(', ')', '{', '}', ';', '[', ']', '=', '"', '#']
     in code > 0x20 && code <= 0x10FFFF && (not <| member c bannedChars)
+
+nameWhitespace : Char -> String
+nameWhitespace c = case c of
+    '\t'       -> "tab"
+    '\u{000b}' -> "vertical tab"
+    ' '        -> "space"
+    '\u{00a0}' -> "non-breaking space"
+    '\u{1680}' -> "ogham space" -- in case anyone accidentally types some medival irish
+    '\u{2000}' -> "en quad"
+    '\u{2001}' -> "em quad (aka the mutton quad)"
+    '\u{2002}' -> "en space (aka the nut)"
+    '\u{2003}' -> "em space (aka mutton)"
+    '\u{2004}' -> "thick (three-per-em) space"
+    '\u{2005}' -> "mid (four-per-em) space"
+    '\u{2006}' -> "six-per-em space"
+    '\u{2007}' -> "figure space"
+    '\u{2008}' -> "punctuation space"
+    '\u{2009}' -> "thin space"
+    '\u{200A}' -> "hair space"
+    '\u{202f}' -> "narrow no-break space"
+    '\u{205f}' -> "medium mathematical space"
+    '\u{3000}' -> "ideographic space"
+    _          -> "U+" ++ toHex (Char.toCode c)
+
+posPlus : Int -> Position -> Position
+posPlus i (r, c) = (r, c + i)
 
 initialCharacter : Char -> Bool
 initialCharacter = andf (not << isDigit) identifierCharacter
