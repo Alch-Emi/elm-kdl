@@ -524,7 +524,7 @@ parseType =
         |. symbol (Token "(" <| PExpecting "type")
         |. star k () nodespace
         |= oneOf
-            [ parseString [')']
+            [ parseString [')','/','\\']
             , commit identity |= problem PInvalidIdentifier
             ]
         |. oneOf
