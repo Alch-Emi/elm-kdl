@@ -264,7 +264,7 @@ unicode_rle.kdl
 unicode_rli.kdl
 unicode_rlm.kdl
 unicode_rlo.kdl
-unicode_silly.kd
+unicode_silly.kdl
 unicode_under_0x20.kdl
 unterminated_empty_node.kdl
 unusual_bare_id_chars_in_quoted_id.kdl
