@@ -638,10 +638,10 @@ mkNode
     : (Int, Int)
     -> (Maybe String {- type -}, String {- name -})
     -> List (Maybe PropOrArg) {- props & args -}
-    -> List LocatedNode {- children -}
+    -> List (Maybe (SourceRange, List LocatedNode)) {- children -}
     -> (Int, Int)
-    -> LocatedNode
-mkNode startLoc (typ, name) propsAndArgsM children endLoc =
+    -> Result PProblem LocatedNode
+mkNode startLoc (typ, name) propsAndArgsM possibleChildBlocks endLoc =
     let
         propsAndArgs = List.filterMap identity propsAndArgsM
         props = Dict.fromList <| List.filterMap
@@ -655,7 +655,12 @@ mkNode startLoc (typ, name) propsAndArgsM children endLoc =
                 Arg v -> Just v
                 _ -> Nothing
             ) propsAndArgs
-    in Node name typ args props children (startLoc, endLoc)
+        childrenWithoutComments = List.filterMap identity possibleChildBlocks
+        nodeLoc = (startLoc, endLoc)
+    in case childrenWithoutComments of
+        [] -> Ok <| Node name typ args props [] nodeLoc
+        [(_, children)] -> Ok <| Node name typ args props children nodeLoc
+        (l1, _) :: (l2, _) :: _ -> Err <| PPrelocated <| TooManyChildBlocks {nodeLoc = nodeLoc, firstBlock = l1, secondBlock = l2}
 
 parseNode : Parser Context PProblem (Maybe LocatedNode)
 parseNode =
@@ -668,17 +673,20 @@ parseNode =
             , lookAhead1 True (PExpecting "eof or }") ((==) '}') |> Parser.map (k ())
             , commit identity |= problem PMalformedNodeComponent
             ]
-        children : Parser Context PProblem (List (LocatedNode))
+        mkChildBlock : Position -> List LocatedNode -> Position -> (SourceRange, List LocatedNode)
+        mkChildBlock start nodes end = ((start, end), nodes)
+        children : Parser Context PProblem (Maybe (SourceRange, List LocatedNode))
         children = parseAstComment |= (
-                succeed identity
+                succeed mkChildBlock
+                |= getPosition
                 |. symbol (Token "{" <| PExpecting "children")
                 |= lazy (\() -> parseNodes)
+                |= getPosition
                 |. oneOf
                     [ symbol (Token "}" PUnclosedChildBlock)
                     , commit () |. end PInvalidIdentifier |. problem PUnclosedChildBlock
                     ]
             )
-            |> Parser.map (Maybe.withDefault [])
             |> inContext WithinChildBlock
     in
         parseAstComment
@@ -705,10 +713,15 @@ parseNode =
                 |= parseAstComment
                 |= parsePropOrArg
             )
-            |= ((succeed identity |. (star k () nodespace |> backtrackable) |= children) |> optional [])
+            |= starL (
+                succeed identity
+                |. (backtrackable (star k () nodespace))
+                |= children
+            )
             |. star k () nodespace
             |. nodeTerminator
             |= getPosition
+            |> Parser.andThen (result problem succeed)
         )
         |> inContext WithinNode
 
@@ -768,6 +781,7 @@ type Problem
     | MultilineStringLineLacksPrefix {strLoc: SourceRange, violatingChars: SourceRange}
     | MultilineStringMismatchedPrefixSpace {strLoc: SourceRange, offendingChar: Position, expected: Char, got: Char}
     | LonelyType {ofValue: Bool, typeLoc: SourceRange, stuckAt: Position}
+    | TooManyChildBlocks ({ nodeLoc : SourceRange, firstBlock : SourceRange, secondBlock : SourceRange })
 
 type alias DefaultContextFrame = {row: Int, col: Int, context: Context}
 type MyContextFrame = ContextFrame Context Position
@@ -1265,6 +1279,15 @@ getErrorMessage source p = case p of
         , PlainText <| if ofValue then "value" else "node"
         , PlainText ", but what actually followed wasn't anything I was able to parse that way.  In particular, I saw got stuck here:"
         , LineExerpt <| pointAtCode source stuckAt
+        ]
+    TooManyChildBlocks {nodeLoc, firstBlock, secondBlock} ->
+        [ PlainText "I saw a block of child nodes starting here:"
+        , LineExerpt <| exerptCode source secondBlock
+        , PlainText "But this node already has a block of child nodes declared here:"
+        , LineExerpt <| exerptCode source firstBlock
+        , PlainText "It seems like both of these blocks belong to the node declaread here:"
+        , LineExerpt <| pointAtCode source (Tuple.first nodeLoc)
+        , PlainText "But any single node can only have one block of child nodes.  Maybe you meant to create another node to hold the second block?\n\n"
         ]
 
 messageToString : Int -> Message -> String
