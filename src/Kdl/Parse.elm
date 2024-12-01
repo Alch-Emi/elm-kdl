@@ -2,7 +2,7 @@ module Kdl.Parse exposing (parse, Problem(..), Message, MessageComponent(..), ge
 
 import Kdl exposing (KdlNumber(..), Node(..), Value, ValueContents(..), LocatedNode, LocatedValue, Position, SourceRange)
 import Kdl.Shared exposing (bom, checkForIllegalBareStrings, identifierCharacter, identifyKeyword, initialCharacter, isAnyWhitespace, legalCharacter, nameWhitespace, unicodeNewline, unicodeScalarValue, unicodeSpace)
-import Kdl.Util exposing (flip, k, maybe, orf, parseRadix, result, toHex, traverseListResult, unlines)
+import Kdl.Util exposing (flip, k, maybe, orf, parseRadix, result, toHex, traverseListResult, triple, unlines)
 
 import BigInt exposing (BigInt)
 import BigRational exposing (BigRational)
@@ -39,6 +39,7 @@ type PProblem
     | PUnfinishedEscline
     | PMalformedNumber
     | PPrelocated Problem
+    | PLonelyType SourceRange
 
 type StringType
     = Raw
@@ -448,21 +449,31 @@ parseNumber =
 parseNumberVal : Parser Context PProblem ValueContents
 parseNumberVal = Parser.map NumberVal (parseNumber |> Parser.map Rational)
 
-mkLocVal : Position -> Maybe String -> ValueContents -> Position -> LocatedValue
-mkLocVal s t v e = Value (s, e) t v
+mkLocVal : Position -> (Maybe String, ValueContents) -> Position -> LocatedValue
+mkLocVal s (t, v) e = Value (s, e) t v
 
 parseValue : Parser Context PProblem LocatedValue
 parseValue =
-    succeed mkLocVal
-    |= getPosition
-    |= optional Nothing (Parser.map Just parseType)
-    |= oneOf
-    [ parseKeyword
-    , parseNumberVal
-    , parseStringVal
-    ]
-    |= getPosition
-    |> inContext WithinValue
+    let
+        parseBody =  oneOf
+            [ parseKeyword
+            , parseNumberVal
+            , parseStringVal
+            ]
+    in
+        succeed mkLocVal
+        |= getPosition
+        |= oneOf
+            [ parseType
+                |> andThen (\(tloc, t) ->
+                    succeed (Tuple.pair (Just t))
+                    |= (parseBody |> orProblem (PLonelyType tloc))
+                )
+            , succeed (Tuple.pair Nothing)
+                |= parseBody
+            ]
+        |= getPosition
+        |> inContext WithinValue
 
 parseBareString : List Char -> Parser c PProblem String
 parseBareString possibleFollowingCharacters = oneOf
@@ -515,21 +526,24 @@ parsePropOrArg = oneOf
         |= parseValue
     ]
 
-parseType : Parser Context PProblem String
+parseType : Parser Context PProblem (SourceRange, String)
 parseType =
-     succeed identity
+     succeed triple
+        |= getPosition
         |. symbol (Token "(" <| PExpecting "type")
         |. star k () nodespace
         |= oneOf
             [ parseString [')','/','\\']
             , commit identity |= problem PInvalidIdentifier
             ]
+        |= getPosition
         |. oneOf
             [ star k () nodespace
                 |. symbol (Token ")" <| PUnclosedType)
             , commit identity |= problem PUnclosedType
             ]
         |. star k () nodespace
+        |> Parser.map (\(start, typ, end) -> ((start, end), typ))
     |> inContext WithinType
         
 parseMultilineComment : Parser Context PProblem ()
@@ -652,12 +666,14 @@ parseNode =
             succeed mkNode
             |= getPosition
             |= oneOf
-                [ succeed Tuple.pair
-                    |= (parseType |> Parser.map Just)
-                    |= oneOf
-                        [ parseString [';', '/', '}']
-                        , commit identity |= problem PInvalidIdentifier
-                        ]
+                [ parseType
+                    |> andThen (\(typLoc, typ) ->
+                        oneOf
+                            [ parseString [';', '/', '}']
+                            , commit identity |. end PInvalidIdentifier |= problem (PLonelyType typLoc)
+                            ]
+                        |> Parser.map (Tuple.pair (Just typ))
+                    )
                 , succeed (Tuple.pair Nothing)
                     |= parseString [';', '/', '}']
                 ]
@@ -702,7 +718,7 @@ findInvalidChars =
         ( k Nothing )
 
 type Problem
-    = Unexpected String
+    = Unexpected Position String
     | UnrecognizedEscapeCode {strLoc: Position, escLoc: SourceRange, char: Char}
     | UnicodeEscapeNotOpened {strLoc: Position, escLoc: SourceRange}
     | UnicodeEscapeEmpty {strLoc: Position, escLoc: SourceRange}
@@ -729,6 +745,7 @@ type Problem
     | MultilineStringTrailingCharacters {strLoc: SourceRange, trailingChars: SourceRange}
     | MultilineStringLineLacksPrefix {strLoc: SourceRange, violatingChars: SourceRange}
     | MultilineStringMismatchedPrefixSpace {strLoc: SourceRange, offendingChar: Position, expected: Char, got: Char}
+    | LonelyType {ofValue: Bool, typeLoc: SourceRange, stuckAt: Position}
 
 type alias DefaultContextFrame = {row: Int, col: Int, context: Context}
 type MyContextFrame = ContextFrame Context Position
@@ -744,7 +761,7 @@ parse s =
             |> Result.mapError (
                 List.head
                 >> Maybe.map translateDeadEnd
-                >> Maybe.withDefault (Unexpected "No dead ends returned in parse")
+                >> Maybe.withDefault (Unexpected (1, 1) "No dead ends returned in parse")
             )
         Just pos -> Err <| ForbiddenCharacter {charPos = pos}
 
@@ -755,42 +772,42 @@ translateDeadEnd {row, col, contextStack, problem} =
         myContextStack = List.map makeContextMatchable contextStack
     in
         case problem of
-            PExpecting s -> Unexpected ("Unexpected problem which resulted in attempting to interpret a character as a " ++ s)
+            PExpecting s -> Unexpected finalPosition ("Unexpected problem which resulted in attempting to interpret a character as a " ++ s)
             PPrelocated p -> p
             PUnrecognizedEscapeCode c -> case myContextStack of
                 ContextFrame WithinStrEscape escStart :: ContextFrame WithinQuotedString strLoc :: _ ->
                     UnrecognizedEscapeCode {strLoc=strLoc, escLoc=(escStart, (row, col - 1)), char=c}
-                _ -> Unexpected "Encountered a PUnrecognizedEscapeCode error while not parsing an escape code in a string"
+                _ -> Unexpected finalPosition "Encountered a PUnrecognizedEscapeCode error while not parsing an escape code in a string"
             PUnicodeEscapeNotOpened -> case myContextStack of
                 ContextFrame WithinStrEscape escStart :: ContextFrame WithinQuotedString strLoc :: _ ->
                     UnicodeEscapeNotOpened {strLoc=strLoc, escLoc=(escStart, (row, col - 1))}
-                _ -> Unexpected "Encountered a PUnicodeEscapeNotOpened error while not parsing an escape code a string"
+                _ -> Unexpected finalPosition "Encountered a PUnicodeEscapeNotOpened error while not parsing an escape code a string"
             PUnicodeEscapeEmpty -> case myContextStack of
                 ContextFrame WithinStrEscape escStart :: ContextFrame WithinQuotedString strLoc :: _ ->
                     UnicodeEscapeEmpty {strLoc=strLoc, escLoc=(escStart, finalPosition)}
-                _ -> Unexpected "Encountered a PUnicodeEscapeEmpty error while not parsing an escape sequence in a string"
+                _ -> Unexpected finalPosition "Encountered a PUnicodeEscapeEmpty error while not parsing an escape sequence in a string"
             PUnicodeEscapeInvalidCharacters -> case myContextStack of
                 ContextFrame WithinStrEscape escStart :: ContextFrame WithinQuotedString strLoc :: _ ->
                     UnicodeEscapeInvalidCharacters {strLoc=strLoc, escLoc=(escStart, finalPosition)}
-                _ -> Unexpected "Encountered a PUnicodeInvalidCharacters error while not parsing an escape sequence in a string"
+                _ -> Unexpected finalPosition "Encountered a PUnicodeInvalidCharacters error while not parsing an escape sequence in a string"
             PIllegalUnicodeCodepoint -> case myContextStack of
                 ContextFrame WithinStrEscape escStart :: ContextFrame WithinQuotedString strLoc :: _ ->
                     UnicodeEscapeBadCodepoint {strLoc=strLoc, escLoc=(escStart, (row, col - 1))}
-                _ -> Unexpected "Encountered a PIllegalUnicodeCodepoint error while not parsing an escape sequence in a string"
+                _ -> Unexpected finalPosition "Encountered a PIllegalUnicodeCodepoint error while not parsing an escape sequence in a string"
             PUnicodeEscapeTooLong -> case myContextStack of
                 ContextFrame WithinStrEscape escStart :: ContextFrame WithinQuotedString strLoc :: _ ->
                     UnicodeEscapeTooLong {strLoc=strLoc, escLoc=(escStart, finalPosition)}
-                _ -> Unexpected "Encountered a PUnicodeEscapeTooLong error while not parsing an escape sequence in a string"
+                _ -> Unexpected finalPosition "Encountered a PUnicodeEscapeTooLong error while not parsing an escape sequence in a string"
             PUnicodeEscapeNotClosed -> case myContextStack of
                 ContextFrame WithinStrEscape escLoc :: ContextFrame WithinQuotedString strStart :: _ ->
                     UnicodeEscapeNotClosed {strLoc=(strStart, finalPosition), escLoc=escLoc}
-                _ -> Unexpected "Encountered a PUnicodeEscapeNotClosed error while not parsing an escape sequence in a string"
+                _ -> Unexpected finalPosition "Encountered a PUnicodeEscapeNotClosed error while not parsing an escape sequence in a string"
             PUnclosedString -> case myContextStack of
                 ContextFrame WithinQuotedString strStart :: _ ->
                     UnclosedString {strType=Quoted, strStart=strStart}
                 ContextFrame WithinRawString strStart :: _ ->
                     UnclosedString {strType=Raw, strStart=strStart}
-                _ -> Unexpected "Encountered a PUnclosedString error while not parsing a string"
+                _ -> Unexpected finalPosition "Encountered a PUnclosedString error while not parsing a string"
             PUnclosedType -> case myContextStack of
                 ContextFrame WithinType typeStart
                     :: ContextFrame WithinNode _
@@ -806,11 +823,11 @@ translateDeadEnd {row, col, contextStack, problem} =
                     :: ContextFrame (WithinPropValue propLoc) _
                     :: _ ->
                     UnclosedType {typeOf=TProperty propLoc,typeStart=typeStart,gaveUpAt=finalPosition}
-                _ -> Unexpected "Encountered a PUnclosedType error while not parsing a value, property, or node's type"
+                _ -> Unexpected finalPosition "Encountered a PUnclosedType error while not parsing a value, property, or node's type"
             PMalformedRawStringOpening -> case myContextStack of
                 ContextFrame WithinRawString strStart :: _ ->
                     MalformedRawStringOpening {stringStart=(strStart, (row, col - 1)), nonQuotationCharacter=finalPosition}
-                _ -> Unexpected "Encountered a PMalformedRawStringOpening error while not parsing a raw string"
+                _ -> Unexpected finalPosition "Encountered a PMalformedRawStringOpening error while not parsing a raw string"
             PMalformedNumber -> case myContextStack of
                 ContextFrame (WithinRadixNumber _) numberStart :: _ ->
                     MalformedNumber {numberStart = numberStart, malformedAt = finalPosition}
@@ -820,19 +837,19 @@ translateDeadEnd {row, col, contextStack, problem} =
                     :: ContextFrame WithinNumber numberStart
                     :: _ ->
                     MalformedNumber {numberStart = numberStart, malformedAt = finalPosition}
-                _ -> Unexpected "Encountered a PMalformedNumber error while not parsing a number"
+                _ -> Unexpected finalPosition "Encountered a PMalformedNumber error while not parsing a number"
             PUnclosedMultilineComment -> case myContextStack of
                 ContextFrame WithinComment commentStart :: _ ->
                     UnclosedMultilineComment {commentStart = commentStart}
-                _ -> Unexpected "Encountered a PUnclosedMultilineComment while not parsing a comment"
+                _ -> Unexpected finalPosition "Encountered a PUnclosedMultilineComment while not parsing a comment"
             PUnclosedChildBlock -> case myContextStack of
                 ContextFrame WithinChildBlock blockStart :: _ ->
                     UnclosedChildBlock {blockStart = blockStart}
-                _ -> Unexpected "Encountered a PUnclosedChildBlock while not parsing a block of children"
+                _ -> Unexpected finalPosition "Encountered a PUnclosedChildBlock while not parsing a block of children"
             PMissingValue -> case myContextStack of
                 ContextFrame (WithinPropValue propLoc) _ :: _ ->
                     MissingValue {property = propLoc, absentValue = finalPosition}
-                _ -> Unexpected "Encountered a PMissingValue while not parsing a property"
+                _ -> Unexpected finalPosition "Encountered a PMissingValue while not parsing a property"
             PInvalidIdentifier -> case myContextStack of
                 ContextFrame WithinString identStart :: _ ->
                     InvalidIdentifier {identifierStart = identStart, confusedAt = finalPosition}
@@ -844,27 +861,31 @@ translateDeadEnd {row, col, contextStack, problem} =
                     InvalidIdentifier {identifierStart = finalPosition, confusedAt = finalPosition}
                 [] ->
                     InvalidIdentifier {identifierStart = finalPosition, confusedAt = finalPosition}
-                _ -> Unexpected "Encountered a PInvalidIdentifier while not parsing an identifier"
+                _ -> Unexpected finalPosition "Encountered a PInvalidIdentifier while not parsing an identifier"
             PUnfinishedEscline -> case myContextStack of
                 ContextFrame WithinEscline backslashLoc :: _ ->
                     UnfinishedEscline {backslashLoc = backslashLoc, nextCharOrEof = finalPosition}
-                _ -> Unexpected "Encountered a PUnfinishedEscline while not parsing an escline"
+                _ -> Unexpected finalPosition "Encountered a PUnfinishedEscline while not parsing an escline"
             PMalformedNodeComponent -> case myContextStack of
                 ContextFrame WithinNode nodeStart :: _ ->
                     MalformedNodeComponent {nodeStart = nodeStart, badElement = finalPosition}
-                _ -> Unexpected "Encountered a PMalformedNodeComponent while not parsing a node"
+                _ -> Unexpected finalPosition "Encountered a PMalformedNodeComponent while not parsing a node"
             PUnrecognizedKeyword -> case myContextStack of
                 ContextFrame WithinKeyword keywordStart :: _ ->
                     UnrecognizedKeyword {keywordLoc = (keywordStart, (row, col - 1))}
-                _ -> Unexpected "Encountered a PUnrecognizedKeyword while not parsing a keyword"
+                _ -> Unexpected finalPosition "Encountered a PUnrecognizedKeyword while not parsing a keyword"
             PBareStringConfusableWithKeyword -> case myContextStack of
                 ContextFrame WithinString identStart :: _ ->
                     BareStringConfusableWithKeyword {strLoc = (identStart, (row, col - 1))}
-                _ -> Unexpected "Encountered a PBareStringConfusableWithKeyword while not parsing a string"
+                _ -> Unexpected finalPosition "Encountered a PBareStringConfusableWithKeyword while not parsing a string"
             PBareStringConfusableWithNumber -> case myContextStack of
                 ContextFrame WithinString identStart :: _ ->
                     BareStringConfusableWithNumber {strLoc = (identStart, (row, col - 1))}
-                _ -> Unexpected "Encountered a PBareStringConfusableWithNumber while not parsing a string"
+                _ -> Unexpected finalPosition "Encountered a PBareStringConfusableWithNumber while not parsing a string"
+            PLonelyType typeLoc -> case myContextStack of
+                ContextFrame typeOf _ :: _ ->
+                    LonelyType {ofValue = typeOf == WithinValue, typeLoc = typeLoc, stuckAt = finalPosition}
+                _ -> Unexpected finalPosition "Encountered a PLonelyType while not parsing anything"
 
 type MessageComponent
     = PlainText String
@@ -953,9 +974,11 @@ multilineStringGuidance =
 
 getErrorMessage : String -> Problem -> Message
 getErrorMessage source p = case p of
-    Unexpected msg ->
+    Unexpected pos msg ->
         [ PlainText "I encountered an unexpected problem while parsing the input!  Merely seeing this message while not having tampered with the library is cause for a bug report, if it behooves you.  The only other information I have is this message:\n"
         , Emphasized msg
+        , PlainText "\n\nHere's where the problem happened"
+        , LineExerpt (pointAtCode source pos)
         ]    
     UnrecognizedEscapeCode            {{-strLoc,-} escLoc, char}               ->
         [ PlainText <| "While parsing a string, I found an escape code I didn't know what to do with.  Specifically, you used the escape code '\\" ++ String.fromChar char ++ "' here:"
@@ -1211,6 +1234,14 @@ getErrorMessage source p = case p of
             , LineExerpt <| pointAtCode source (strEndRow, offset)
             , PlainText "When you're writing a multi-line string, it's important that the whitespace preceding each line is exactly the same.\n\n"
             ] ++ multilineStringGuidance
+    LonelyType    {typeLoc, ofValue, stuckAt}            ->
+        [ PlainText "I saw a type declared here:"
+        , LineExerpt <| exerptCode source typeLoc
+        , PlainText "And so I expected it to be followed by a "
+        , PlainText <| if ofValue then "value" else "node"
+        , PlainText ", but what actually followed wasn't anything I was able to parse that way.  In particular, I saw got stuck here:"
+        , LineExerpt <| pointAtCode source stuckAt
+        ]
 
 messageToString : Int -> Message -> String
 messageToString =

@@ -1,4 +1,4 @@
-module Kdl.Util exposing (andf, bool, either, flip, k, liftA2f, maybe, orf, parseRadix, result, sequenceListF, sequenceListMaybe, toHex, traverseListResult, unlines, withinRange)
+module Kdl.Util exposing (andf, bool, either, flip, k, liftA2f, maybe, orf, parseRadix, result, sequenceListF, sequenceListMaybe, toHex, traverseListResult, triple, unlines, withinRange)
 
 import BigInt exposing (BigInt)
 import List exposing (drop, head)
@@ -101,3 +101,6 @@ withinRange startInclusive endInclusive v = startInclusive <= v && v <= endInclu
 
 bool : a -> a -> Bool -> a
 bool f t b = if b then t else f
+
+triple : a -> b -> c -> (a, b, c)
+triple a b c = (a, b, c)
