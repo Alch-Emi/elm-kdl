@@ -1,7 +1,7 @@
 module Kdl.Parse exposing (parse, Problem(..), Message, MessageComponent(..), getErrorMessage, messageToString)
 
 import Kdl exposing (KdlNumber(..), Node(..), Value, ValueContents(..), LocatedNode, LocatedValue, Position, SourceRange)
-import Kdl.Shared exposing (bom, checkForIllegalBareStrings, identifierCharacter, identifyKeyword, initialCharacter, isAnyWhitespace, legalCharacter, nameWhitespace, unicodeNewline, unicodeScalarValue, unicodeSpace)
+import Kdl.Shared exposing (bom, checkForIllegalBareStrings, identifierCharacter, identifyKeyword, initialCharacter, isAnyWhitespace, legalCharacter, nameWhitespace, posPlus, unicodeNewline, unicodeScalarValue, unicodeSpace)
 import Kdl.Util exposing (flip, k, maybe, orf, parseRadix, result, toHex, traverseListResult, triple, unlines)
 
 import BigInt exposing (BigInt)
@@ -11,10 +11,9 @@ import Char exposing (isDigit, toCode)
 import Dict
 import List exposing (member)
 import Maybe exposing (withDefault)
-import Parser.Advanced as Parser exposing (DeadEnd, Parser, Nestable(..), Token(..), (|.), (|=), andThen, backtrackable, chompIf, chompUntil, chompWhile, commit, end, getChompedString, getOffset, getSource, getPosition, inContext, lazy, problem, oneOf, succeed, symbol, variable)
+import Parser.Advanced as Parser exposing (DeadEnd, Parser, Nestable(..), Token(..), (|.), (|=), andThen, backtrackable, chompIf, chompUntil, chompUntilEndOr, chompWhile, commit, end, getChompedString, getOffset, getSource, getPosition, inContext, lazy,mapChompedString, problem, oneOf, succeed, symbol, variable)
 import String
 import Set
-import Parser.Advanced exposing (chompUntilEndOr)
 
 type PProblem
     = PExpecting String
@@ -272,7 +271,7 @@ processMultilineString lines =
         nonEmptyFirstLine :: _ :: _ ->
             let
                 endOfFirstLine = endOfLexemeLine nonEmptyFirstLine |> withDefault (0, 0)
-            in Err (\strLoc -> NewlineInQuotedString {strLoc=strLoc, newlineLoc=endOfFirstLine})
+            in Err (\strLoc -> NewlineInMonolineString {strLoc=strLoc, newlineLoc=endOfFirstLine})
 
 lexemeToString : StrLexeme -> String
 lexemeToString l = case l of
@@ -293,12 +292,12 @@ parseQuotedString : Parser Context PProblem String
 parseQuotedString =
     let
         f : Position -> List (List StrLexeme) -> Position -> Parser Context PProblem String
-        f openPos contents (closeRow, closeCol) =
+        f openPos contents closePos =
             contents
             |> processWhitespaceEscapes
             |> processMultilineString
             |> Result.map lexemesToString
-            |> Result.mapError ((|>) (openPos, (closeRow, closeCol - 1)) >> PPrelocated)
+            |> Result.mapError ((|>) (posPlus 1 openPos, posPlus -2 closePos) >> PPrelocated)
             |> result problem succeed
     in
         succeed f
@@ -312,18 +311,38 @@ parseQuotedString =
 
 parseRawString : Parser Context PProblem String
 parseRawString =
-    plus k () (chompIf ((==) '#') (PExpecting "raw string"))
-    |. symbol (Token "\"" <| PMalformedRawStringOpening)
-    |> getChompedString 
-    |> andThen (\openingToken ->
-        let
-            closeToken = Token (String.reverse openingToken) PUnclosedString
-        in
-            chompUntil closeToken
-            |> getChompedString
-            |> flip (|.) (symbol closeToken)
-    )
-    |> inContext WithinRawString
+    let
+        wrapLineInLexeme (rowStart, colStart) currentRowOffset line =
+            let
+                currentRow = rowStart + currentRowOffset
+                startCol = if currentRow == rowStart then colStart else 0
+                endCol = startCol + String.length line
+            in if startCol == endCol then [] else [StrLexeme STNormal ((currentRow, startCol), (currentRow, endCol)) line]
+    in
+        plus k () (chompIf ((==) '#') (PExpecting "raw string"))
+        |. symbol (Token "\"" <| PMalformedRawStringOpening)
+        |> getChompedString
+        |> andThen (\openingToken ->
+            let
+                closeToken = Token (String.reverse openingToken) PUnclosedString
+            in
+                succeed Tuple.pair
+                |= getPosition
+                |. chompUntil closeToken
+                |= getPosition
+                |> mapChompedString (\lines ((contentsStart, contentsEnd)) ->
+                    String.lines lines
+                    |> List.indexedMap (wrapLineInLexeme contentsStart)
+                    |> Tuple.pair (contentsStart, posPlus -(String.length openingToken + 1) contentsEnd)
+                )
+                |> Parser.andThen (\(contents, strLexemes) ->
+                    processMultilineString strLexemes
+                    |> result (flip (<|) contents >> PPrelocated >> problem) succeed
+                )
+                |> Parser.map lexemesToString
+                |> flip (|.) (symbol closeToken)
+        )
+        |> inContext WithinRawString
 
 parseKeyword : Parser Context PProblem ValueContents
 parseKeyword =
@@ -741,7 +760,7 @@ type Problem
     | BareStringConfusableWithKeyword {strLoc: SourceRange}
     | BareStringConfusableWithNumber {strLoc: SourceRange}
     | UnrecognizedKeyword {keywordLoc: SourceRange}
-    | NewlineInQuotedString {strLoc: SourceRange, newlineLoc: Position}
+    | NewlineInMonolineString {strLoc: SourceRange, newlineLoc: Position}
     | MultilineStringTrailingCharacters {strLoc: SourceRange, trailingChars: SourceRange}
     | MultilineStringLineLacksPrefix {strLoc: SourceRange, violatingChars: SourceRange}
     | MultilineStringMismatchedPrefixSpace {strLoc: SourceRange, offendingChar: Position, expected: Char, got: Char}
@@ -1186,17 +1205,19 @@ getErrorMessage source p = case p of
         , LineExerpt <| editThenExerpt source ("\"" ++ (getTextUnderRange strLoc source) ++ "\"") strLoc
         , PlainText "If you meant for it to be a number, check to make sure that you're number is written correctly."
         ]
-    NewlineInQuotedString                   {strLoc{-, newlineLoc-}}       ->
+    NewlineInMonolineString                   {strLoc{-, newlineLoc-}}       ->
         let
             ((startRow, _), (endRow, _) as strEnd) = strLoc
             stringTotalLines = endRow - startRow + 1
         in
             [ PlainText "I was trying to parse a string here:"
             , LineExerpt <| exerptCode source strLoc
-            , PlainText "But the only closing double-quote (\") I see is "
+            , PlainText "But the only possible end to the string that I see is "
             , PlainText <| String.fromInt (stringTotalLines - 1)
-            , PlainText " lines down, here:"
-            , LineExerpt <| pointAtCode source strEnd
+            , PlainText " line"
+            , PlainText <| if stringTotalLines == 2 then "" else "s"
+            , PlainText " down, here:"
+            , LineExerpt <| pointAtCode source (posPlus 1 strEnd)
             , PlainText "Did you mean for this to be a multiline string?  If so, recall that the opening quote of a multi-line string must be immediately followed by a newline, and the string itself starts on the next line."
             , PlainText "\n\nOtherwise, maybe you just forgot to close this string?\n\n"
             ] ++ multilineStringGuidance
