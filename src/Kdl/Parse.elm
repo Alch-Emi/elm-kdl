@@ -484,11 +484,13 @@ parseValue =
         |= getPosition
         |= oneOf
             [ parseType
+                |. star k () nodespace
                 |> andThen (\(tloc, t) ->
                     succeed (Tuple.pair (Just t))
                     |= (parseBody |> orProblem (PLonelyType tloc))
                 )
             , succeed (Tuple.pair Nothing)
+                |. star k () nodespace
                 |= parseBody
             ]
         |= getPosition
@@ -561,7 +563,6 @@ parseType =
                 |. symbol (Token ")" <| PUnclosedType)
             , commit identity |= problem PUnclosedType
             ]
-        |. star k () nodespace
         |> Parser.map (\(start, typ, end) -> ((start, end), typ))
     |> inContext WithinType
         
@@ -686,6 +687,7 @@ parseNode =
             |= getPosition
             |= oneOf
                 [ parseType
+                    |. star k () nodespace
                     |> andThen (\(typLoc, typ) ->
                         oneOf
                             [ parseString [';', '/', '}']
@@ -694,6 +696,7 @@ parseNode =
                         |> Parser.map (Tuple.pair (Just typ))
                     )
                 , succeed (Tuple.pair Nothing)
+                    |. star k () nodespace
                     |= parseString [';', '/', '}']
                 ]
             |= starL (
