@@ -462,8 +462,8 @@ parseValue =
     |= optional Nothing (Parser.map Just parseType)
     |= oneOf
     [ parseKeyword
-    , parseStringVal
     , parseNumberVal
+    , parseStringVal
     ]
     |= getPosition
     |> inContext WithinValue
