@@ -1,8 +1,8 @@
 module Kdl.Parse exposing (parse, Problem(..), Message, MessageComponent(..), getErrorMessage, messageToString)
 
 import Kdl exposing (KdlNumber(..), Node(..), Value, ValueContents(..), LocatedNode, LocatedValue, Position, SourceRange)
-import Kdl.Shared exposing (bom, identifierCharacter, initialCharacter, isAnyWhitespace, legalCharacter, nameWhitespace, unicodeNewline, unicodeScalarValue, unicodeSpace)
-import Kdl.Util exposing (either, flip, k, liftA2f, maybe, orf, parseRadix, result, toHex, traverseListResult, unlines)
+import Kdl.Shared exposing (bom, checkForIllegalBareStrings, identifierCharacter, identifyKeyword, initialCharacter, isAnyWhitespace, legalCharacter, nameWhitespace, unicodeNewline, unicodeScalarValue, unicodeSpace)
+import Kdl.Util exposing (flip, k, maybe, orf, parseRadix, result, toHex, traverseListResult, unlines)
 
 import BigInt exposing (BigInt)
 import BigRational exposing (BigRational)
@@ -11,7 +11,7 @@ import Char exposing (isDigit, toCode)
 import Dict
 import List exposing (member)
 import Maybe exposing (withDefault)
-import Parser.Advanced as Parser exposing (DeadEnd, Parser, Nestable(..), Token(..), (|.), (|=), andThen, backtrackable, chompIf, chompUntil, chompWhile, commit, end, getChompedString, getOffset, getSource, getPosition, inContext, lazy, problem, keyword, oneOf, succeed, symbol, variable)
+import Parser.Advanced as Parser exposing (DeadEnd, Parser, Nestable(..), Token(..), (|.), (|=), andThen, backtrackable, chompIf, chompUntil, chompWhile, commit, end, getChompedString, getOffset, getSource, getPosition, inContext, lazy, problem, oneOf, succeed, symbol, variable)
 import String
 import Set
 import Parser.Advanced exposing (chompUntilEndOr)
@@ -323,16 +323,6 @@ parseRawString =
     )
     |> inContext WithinRawString
 
-identifyKeyword : String -> Maybe ValueContents
-identifyKeyword keyword = case keyword of
-    "true" -> Just <| BoolVal True
-    "false" -> Just <| BoolVal False
-    "null" -> Just NullVal
-    "inf" -> Just (NumberVal PositiveInfinity)
-    "-inf" -> Just (NumberVal NegativeInfinity)
-    "nan" -> Just (NumberVal NaN)
-    _ -> Nothing
-
 parseKeyword : Parser Context PProblem ValueContents
 parseKeyword =
     succeed identifyKeyword
@@ -477,25 +467,6 @@ parseValue =
     |= getPosition
     |> inContext WithinValue
 
-signChar : Char -> Bool
-signChar = flip member ['+', '-']
-
-dot : Char -> Bool
-dot = (==) '.'
-
-checkForIllegalKeywords : String -> Maybe PProblem
-checkForIllegalKeywords =
-    let
-        illegalStarts = oneOf
-            [ chompIf dot ()
-            , chompIf signChar ()
-                |. optional () (chompIf dot ())
-            ]
-            |. chompIf isDigit ()
-        checkIllegalStart = Parser.run illegalStarts >> result (k Nothing) (k (Just PBareStringConfusableWithNumber))
-        checkKeyword = identifyKeyword >> Maybe.map (k PBareStringConfusableWithKeyword)
-    in liftA2f either checkIllegalStart checkKeyword
-
 parseBareString : List Char -> Parser c PProblem String
 parseBareString possibleFollowingCharacters = oneOf
     [ variable
@@ -513,7 +484,7 @@ parseBareString possibleFollowingCharacters = oneOf
         )
     |> getChompedString
     |> Parser.andThen (\s ->
-        case checkForIllegalKeywords s of
+        case checkForIllegalBareStrings PBareStringConfusableWithNumber PBareStringConfusableWithKeyword (PExpecting "valid bare string") (PExpecting "valid bare string") s of
             Nothing -> succeed s
             Just p -> problem p
     )

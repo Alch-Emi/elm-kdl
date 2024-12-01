@@ -1,14 +1,14 @@
 module Kdl.Serialize exposing (..)
 
-import Kdl exposing (Node(..), Value, ValueContents(..))
-import Kdl.Shared exposing (identifierCharacter, initialCharacter)
-import Kdl.Util exposing (flip, maybe)
+import Kdl exposing (KdlNumber(..), Node(..), Value, ValueContents(..))
+import Kdl.Shared exposing (checkForIllegalBareStrings, illegalCharacter)
+import Kdl.Util exposing (flip, toHex)
 
 import BigInt
 import BigRational exposing (BigRational)
 import BigInt exposing (BigInt)
-import Dict
-import Kdl exposing (KdlNumber(..))
+import Dict exposing (Dict)
+import Maybe exposing (withDefault)
 
 ---------------[ Bags ]-------------------------------
 
@@ -83,8 +83,8 @@ lineReplace from to = bindBag (replaceToBag from to)
 
 ----------------------------------------------------
 
-escapes : List ( Char, Char )
-escapes =
+escapes : Dict Char Char
+escapes = Dict.fromList
     [ ('\n', 'n')
     , ('\r', 'r')
     , ('\t', 't')
@@ -94,12 +94,15 @@ escapes =
     , ('\\', '\\')
     ]
 
-strEscape : String -> Line
+strEscape : String -> String
 strEscape =
     let
-        doEscape (f, t) = lineReplace (String.fromChar f) (String.fromList ['\\', t])
-        doAllEscapes = List.foldl (doEscape >> (>>)) identity escapes
-    in singletonBag >> doAllEscapes
+        escape c = case Dict.get c escapes of
+            Just escCode -> String.fromList ['\\', escCode]
+            Nothing -> if illegalCharacter c
+                then ("\\u{" ++ toHex (Char.toCode c) ++ "}")
+                else String.fromChar c
+    in String.toList >> List.map escape >> String.concat
 
 quoteB : Bag String
 quoteB = singletonBag "\""
@@ -134,8 +137,10 @@ oparenB = singletonBag "("
 cparenB : Bag String
 cparenB = singletonBag ")"
 
-serializeStrVal : String -> Line
-serializeStrVal s = concatBags [quoteB, strEscape s, quoteB]
+serializeStr : String -> Line
+serializeStr s = if checkForIllegalBareStrings True True True True s |> withDefault False
+    then concatBags [quoteB, singletonBag (strEscape s), quoteB]
+    else singletonBag s
 
 zero : BigRational
 zero = BigRational.fromInt 0
@@ -178,7 +183,7 @@ serializeType : Maybe String -> Line
 serializeType t_ = case t_ of
     Just t -> concatBags
         [ oparenB
-        , serializeIdent t
+        , serializeStr t
         , cparenB
         ]
     Nothing -> emptyBag
@@ -188,7 +193,7 @@ serializeVal {typestr, contents} =
     let
         typeSerialized = serializeType typestr
         contentsSerialized = case contents of
-            StringVal s -> serializeStrVal s
+            StringVal s -> serializeStr s
             NumberVal PositiveInfinity -> singletonBag "#inf"
             NumberVal NegativeInfinity -> singletonBag "#-inf"
             NumberVal NaN -> singletonBag "#nan"
@@ -198,22 +203,9 @@ serializeVal {typestr, contents} =
             NullVal -> singletonBag "#null"
     in concatBags [typeSerialized, contentsSerialized]
 
-serializeIdent : String -> Line
-serializeIdent v =
-    let
-        canSerializeAux i = case String.uncons i of
-            Nothing -> True
-            Just (h, t) -> List.foldl (&&) (initialCharacter h) <| List.map identifierCharacter <| String.toList t
-        canSerializeBare i = case String.uncons i of
-            Nothing -> False
-            Just (h, t) -> if h == '-' || h == '+'
-                then canSerializeAux t
-                else canSerializeAux i
-    in if canSerializeBare v then v |> singletonBag else serializeStrVal v
-
 serializeProp : (String, Value l ValueContents) -> Line
 serializeProp (k, v) = concatBags
-    [ serializeIdent k
+    [ serializeStr k
     , eqB
     , serializeVal v
     ]
@@ -222,7 +214,7 @@ serializeNode : Node l ValueContents -> Lines
 serializeNode (Node name typ args props children _) = 
     let
         serializedType = serializeType typ
-        serializedName = concatBags [serializedType, serializeIdent name]
+        serializedName = concatBags [serializedType, serializeStr name]
         serializedArgs = concatSepBags spaceB <| List.map serializeVal args
         serializedProps = Dict.toList props
             |> List.sortBy Tuple.first
