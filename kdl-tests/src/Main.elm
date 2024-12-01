@@ -118,9 +118,6 @@ viewPanel name value = div
 
 viewTest : (String, Maybe (String, Maybe String, Result Problem String)) -> (String, Html msg)
 viewTest (testName, result) = pair testName <|
-    details
-        []
-        (
             case result of
                 Just (inputData, expectedResult, actualResult) ->
                     let
@@ -132,21 +129,25 @@ viewTest (testName, result) = pair testName <|
                             Err e -> "<parse error>\n\n" ++ (getErrorMessage inputData e |> messageToString 4)
                         testSuccess = expectedResult == (Result.toMaybe actualResult)
                     in
-                        [ summary []
-                            [ text (if testSuccess then "✓" else "✗")
-                            , text testName
+                        details
+                            [ style "background-color" (if testSuccess then "#bae2d8" else "#e2d8ba")
                             ]
-                        , viewPanel "Input Data" inputData
-                        , viewPanel "Expected Result" expectedResultString
-                        , viewPanel "Actual Result" actualResultString
-                        ]
+                            [ summary []
+                                [ text (if testSuccess then "✓" else "✗")
+                                , text testName
+                                ]
+                            , viewPanel "Input Data" inputData
+                            , viewPanel "Expected Result" expectedResultString
+                            , viewPanel "Actual Result" actualResultString
+                            ]
                 Nothing ->
+                    details
+                        []
                         [ summary []
                             [ text "⋯"
                             , text testName
                             ]
                         ]
-        )
 
 view : Model -> Document msg
 view m =
@@ -161,7 +162,10 @@ view m =
             }
         RunningTests tests ->
             { title = "Elm KDL test suite"
-            , body = List.singleton <| Keyed.node "div" []
+            , body = List.singleton <| Keyed.node "div"
+                [ style "max-width" "50em"
+                , style "margin" "50px auto"
+                ]
                 (
                     tests
                         |> Dict.toList
