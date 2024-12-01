@@ -504,7 +504,7 @@ parsePropOrArg = oneOf
         |= getPosition
         |= (backtrackable <| parseString ['='])
         |= getPosition
-        |. star k () nodespace
+        |. (backtrackable <| star k () nodespace)
         |. symbol (Token "=" <| PExpecting "equals")
         |. star k () nodespace
         |> Parser.andThen (\(startPos, keyName, (endRow, endCol)) ->
