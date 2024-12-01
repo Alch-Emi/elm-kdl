@@ -436,13 +436,9 @@ parseNumber =
             ]
     in oneOf
         [ succeed (BigRational.fromInt >> BigRational.mul)
-            |= parseSign
+            |= backtrackable parseSign
             |= oneOf
                 [ parseBody
-                , succeed identity
-                    |. lookAhead1 False PMalformedNumber (identifierCharacter)
-                    |. commit ()
-                    |= problem PMalformedNumber 
                 ]
         , parseBody
         ]
