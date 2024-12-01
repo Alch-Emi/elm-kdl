@@ -218,6 +218,7 @@ processMultilineString lines =
                     List.drop (List.length otherLines - 1) otherLines
                     |> List.head
                     |> withDefault firstLine
+                allLinesButLast = firstLine :: List.take (List.length otherLines - 1) otherLines
                 firstNonwhitespace whitespaceSeen s = flip Maybe.andThen (String.uncons s) (\(c, rest) -> 
                         if unicodeSpace c
                             then firstNonwhitespace (whitespaceSeen + 1) rest
@@ -266,7 +267,7 @@ processMultilineString lines =
                                             MultilineStringLineLacksPrefix {strLoc = strLoc, violatingChars = (lexemeStart, (row, lCol + (String.length remainingPrefix)))}
                                         )
                 dedentAllLines = dedentLine >> traverseListResult
-            in Result.andThen (flip dedentAllLines (firstLine :: otherLines)) whitespacePrefixOrErr
+            in Result.andThen (flip dedentAllLines allLinesButLast) whitespacePrefixOrErr
         nonEmptyFirstLine :: _ :: _ ->
             let
                 endOfFirstLine = endOfLexemeLine nonEmptyFirstLine |> withDefault (0, 0)
