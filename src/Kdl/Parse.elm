@@ -1,4 +1,21 @@
-module Kdl.Parse exposing (parse, Problem(..), Message, MessageComponent(..), getErrorMessage, messageToString)
+module Kdl.Parse exposing (parse, Problem(..), Message, MessageComponent(..), getErrorMessage, messageToString, StringType, TypeableThing)
+
+{-| Everything you need to turn raw text into KDL values
+
+# Core Functions
+@docs parse
+@docs Problem
+
+# Error Message Tooling
+@docs getErrorMessage
+@docs Message
+@docs MessageComponent
+@docs messageToString
+
+## Misc Types
+@docs StringType
+@docs TypeableThing
+-}
 
 import Kdl exposing (KdlNumber(..), Node(..), Value, ValueContents(..), LocatedNode, LocatedValue, Position, SourceRange)
 import Kdl.Shared exposing (bom, checkForIllegalBareStrings, identifierCharacter, identifyKeyword, initialCharacter, isAnyWhitespace, legalCharacter, nameWhitespace, posPlus, unicodeNewline, unicodeScalarValue, unicodeSpace)
@@ -41,10 +58,17 @@ type PProblem
     | PLonelyType SourceRange
     | POldStyleRawString
 
+{-| The possible types of strings in KDL
+-}
 type StringType
     = Raw
     | Quoted
 
+
+{-| Things in KDL which may have a type applied to them.
+
+Note:  The `TProperty` variant represents a property whose value is typed.  The associated [`SourceRange`](Kdl#SourceRange) is the location of the property's key.
+-}
 type TypeableThing
     = TNode
     | TProperty SourceRange
@@ -766,6 +790,43 @@ findInvalidChars =
         )
         ( k Nothing )
 
+{-| Anything that can possibly go wrong while parsing a KDL document
+
+This type exposes its variants in case you want to write your own error messages for each of these cases, but it's much more likely that you'll want to pass this to [`getErrorMessage()`][], which will generate a pleasant, user-friendly error message for you to show your user.
+
+In case you are interested in what each variant means, here's the full breakdown: 
+- **Unexpected**: This variant should never appear, but if it does, something has gone wrong, and you should file a bug report with this library.
+- **UnrecognizedEscapeCode**: The user has used an escape code which doesn't have a mapping, e.g. `\p`.  Describes the location of the string (`strLoc`), the location of the escape sequence (`escLoc`), and the character used (`char`).
+- **UnicodeEscapeNotOpened**: The parser encountered a unicode escape (`\u`), but there wasn't a character following it.  Describes the location of the string it appeared in (`strLoc`) nad the position of the unicode escape (`escLoc`).
+- **UnicodeEscapeEmpty**: The parser encountered an empty unicode escape (`\u{}`).  Describes the location of the string it appeared in (`strLoc`) and the location of the full escape sequence (`escLoc`).
+- **UnicodeEscapeInvalidCharacters**: A unicode escape contained characters outside of the hexadecimal set.  Describes the location of the string containing it (`strLoc`) and the full escape sequence (`escLoc`).
+- **UnicodeEscapeTooLong**: A unicode escape contained more than six characters.  Describes the location of the string containing it (`strLoc`) and the full escape sequence (`escLoc`).
+- **UnicodeEscapeNotClosed**: A unicode escape was opened, but never closed.  Describes the location of the string containing it (`strLoc`) and the position that the escape sequence starts (`escLoc`).
+- **UnicodeEscapeBadCodepoint**: The user tried to encode a unicode codepoint that wasn't a valid unicode character.  Describes the location of the string containing it (`strLoc`) and the location of the full escape sequence (`escLoc`).
+- **UnclosedString**: A string was opened, but the end of the input was reached and an end was never found.  Describes the start of the string (`strStart`) and what kind of string it was (`strType`).
+- **UnclosedType**: A type was opened, but never closed.  Describes the what kind of thing the type was accompanying (`typeOf`), the location of the opening parenthesis of the type (`typeStart`), and the position in the source where the parser gave up trying to parse the type (`gaveUpAt`).
+- **MalformedRawStringOpening**: A raw string was started, but no double-quote followed the pound signs.  Describes the start of the string (`stringStart`) and the character where the double quote would have gone (`nonQuotationCharacter`).
+- **MalformedNumber**: A number was malformed.  Describes the first character of the number (`numberStart`) and the first malformed character (`malformedAt`).
+- **UnclosedMultilineComment**: A multiline comment was opened and never closed.  Describes the start of the comment (`commentStart`).
+- **UnclosedChildBlock**: A child block was opened and never closed.  Describes the start of the block (`blockStart`).
+- **MissingValue**: A property was defined (`myprop=`), but wasn't followed by anything that looked like a value.  Describes the location of the property (`property`) and the place where the value ought to go (`absentValue`).
+- **InvalidIdentifier**: An identifier was malformed.  Describes the start of the identifier (`identifierStart`) and the position of the first bad character (`confusedAt`).
+- **UnfinishedEscline**: A backslash was seen, but wasn't followed by a newline.  Describes the position of the backslash (`backslashLoc`) and the place where a newline was expected (`nextChar`).
+- **MalformedNodeComponent**: A catchall for weird things in a node.  Describes the start of the node (`nodeStart`) and the position where the confusing thing was seen (`badElement`).
+- **ForbiddenCharacter**: A unicode character which must never appear unescaped in a KDL document appeared in the source.  Describes the location of the forbidden character (`charPos`).
+- **BareStringConfusableWithKeyword**: A bare string was used that looked like a keyword (e.g. `true`, `inf`).  Describes the location of the bare string (`strLoc`).
+- **BareStringConfusableWithNumber**: A bare string was used that looked like a number (e.g. `+.1name`, `-0lol`).  Describes the location of the bare string (`strLoc`).
+- **UnrecognizedKeyword**: A keyword (e.g. `#true`) was used that wasn't recognized.  Describes the location of the keyword (`keywordLoc`).
+- **NewlineInMonolineString**: A string contained an unescaped newline, but it wasn't a multiline string (i.e. the opening quote wasn't immediately followed by a newline).  Describes the location of the string (`strLoc`) and newline (`newlineLoc`).
+- **MultilineStringTrailingCharacters**: A multiline string had characters on the last line.  Describes the location of the string (`strLoc`) and trailing characters (`trailingChars`).
+- **MultilineStringLineLacksPrefix**: A multiline string contains a line that doesn't begin with the necessary whitespace.  Describes the location of the string (`strLoc`) and characters that protrude before the acceptable start of the line (`violatingChars`).
+- **MultilineStringMismatchedPrefixSpace**: A multiline string contains a line that begins with the wrong type (e.g. tab vs space) of whitespace.  Describes the location of the string (`strLoc`), offending whitespace (`offendingChar`), what was expected according to the prefix established by the last line (`expected`) and what character was actually seen (`got`).
+- **LonelyType**: A type was written, but not followed by anything.  Describes whether the type belonged to a value or a node (`ofValue`), the location of the type (`typeLoc`), the character which the parser got stuck on (`stuckAt`).
+- **TooManyChildBlocks**: A node has more than one child block.  Describes whether the location of the node (`nodeLoc`), and the locations of the first and second uncommented child blocks (`firstBlock`/`secondBlock`).
+- **OldStyleRawString**: The user tried to use an old style raw string (i.e. `r##"` rather than `##"`).  Describes whether the location of the opening prefix (`prefixLoc`).
+
+[`getErrorMessage()`]: #getErrorMessage
+-}
 type Problem
     = Unexpected Position String
     | UnrecognizedEscapeCode {strLoc: Position, escLoc: SourceRange, char: Char}
@@ -781,10 +842,9 @@ type Problem
     | MalformedNumber {numberStart: Position, malformedAt: Position}
     | UnclosedMultilineComment {commentStart: Position}
     | UnclosedChildBlock {blockStart: Position}
-    | UnterminatedNode {blockStart: Position, nodeStart: Position, blockEnd: Position} 
     | MissingValue {property: SourceRange, absentValue: Position}
     | InvalidIdentifier {identifierStart: Position, confusedAt: Position}
-    | UnfinishedEscline {backslashLoc: Position, nextCharOrEof: Position}
+    | UnfinishedEscline {backslashLoc: Position, nextChar: Position}
     | MalformedNodeComponent {nodeStart: Position, badElement: Position}
     | ForbiddenCharacter {charPos: Position}
     | BareStringConfusableWithKeyword {strLoc: SourceRange}
@@ -804,6 +864,10 @@ type MyContextFrame = ContextFrame Context Position
 makeContextMatchable : DefaultContextFrame -> MyContextFrame
 makeContextMatchable {row, col, context} = ContextFrame context (row, col)
 
+{-| Take a string and try to parse the KDL out of it
+
+This always tries to parse a whole document, meaning it returns a list of nodes.  If it fails, it'll return a [`Problem`][] to give a very specific reason why it failed that you can use to give the user a description of what went wrong and potentially how to fix with it.
+-}
 parse : String -> Result Problem (List (LocatedNode))
 parse s =
     case findInvalidChars s of
@@ -915,7 +979,7 @@ translateDeadEnd {row, col, contextStack, problem} =
                 _ -> Unexpected finalPosition "Encountered a PInvalidIdentifier while not parsing an identifier"
             PUnfinishedEscline -> case myContextStack of
                 ContextFrame WithinEscline backslashLoc :: _ ->
-                    UnfinishedEscline {backslashLoc = backslashLoc, nextCharOrEof = finalPosition}
+                    UnfinishedEscline {backslashLoc = backslashLoc, nextChar = finalPosition}
                 _ -> Unexpected finalPosition "Encountered a PUnfinishedEscline while not parsing an escline"
             PMalformedNodeComponent -> case myContextStack of
                 ContextFrame WithinNode nodeStart :: _ ->
@@ -942,12 +1006,16 @@ translateDeadEnd {row, col, contextStack, problem} =
                     OldStyleRawString {prefixLoc = (prefixStart, posPlus -1 finalPosition) }
                 _ -> Unexpected finalPosition "Encountered a POldStyleRawString while not parsing a string"
 
+{-| One formatting node within a [`Message`][].
+-}
 type MessageComponent
     = PlainText String
     | Emphasized String
     | LineExerpt {lineNo: Int, highlightStart: Int, highlightEnd: Int, exerpt: String}
     | Link String
 
+{-| Text with some very simple non-recursive markup
+-}
 type alias Message = List MessageComponent
 
 uppercaseEscapeCodes : List Char
@@ -1027,6 +1095,10 @@ multilineStringGuidance =
     , Link "https://github.com/kdl-org/kdl/blob/76a1de5/SPEC.md#multi-line-strings"
     ]
 
+{-| Converts a [`Problem`](Kdl.Parse#Problem) into a user-friendly message.
+
+Takes as arguments the full text of the source (for giving explanatory exerpts) and the problem to serialize.  The result is returned as a [`Message`](Kdl.Parse#Message), which represents some basic text with very simple code formatting applied.  I recommend using the `Message` to construct rich text in whatever format you can give to the reader, and take full advantage of the markup, but you can also use [`messageToString()`](Kdl.Parse#messageToString) to strip most formatting and return raw text.
+-}
 getErrorMessage : String -> Problem -> Message
 getErrorMessage source p = case p of
     Unexpected pos msg ->
@@ -1138,16 +1210,6 @@ getErrorMessage source p = case p of
         , Emphasized "}"
         , PlainText ").  Make sure you add one in somewhere after you're done declaring all the children!"
         ]
-    UnterminatedNode                  {blockStart, nodeStart, blockEnd}    ->
-        [ PlainText "It looks like you may have forgotten to include a semicolon or newline right here:"
-        , LineExerpt <| pointAtCode source blockEnd
-        , PlainText "It seems like you open a block of nodes here:"
-        , LineExerpt <| pointAtCode source blockStart
-        , PlainText "and within that block, you declare your last node here:"
-        , LineExerpt <| pointAtCode source nodeStart
-        , PlainText "But then I think you try to close the block here, before I see a semicolon or a newline to close off that node:"
-        , LineExerpt <| pointAtCode source blockEnd
-        ]
     MissingValue                      {property{-, absentValue-}}              ->
         [ PlainText "It looks like you defined a property called "
         , PlainText <| getTextUnderRange property source
@@ -1162,11 +1224,11 @@ getErrorMessage source p = case p of
         , LineExerpt <| pointAtCode source confusedAt
         , PlainText "Did you mean for this to be an identifier?  If so, maybe try wrapping it in quotation marks, or removing the bad characters."
         ]
-    UnfinishedEscline                 {backslashLoc, nextCharOrEof}        ->
+    UnfinishedEscline                 {backslashLoc, nextChar}        ->
         [ PlainText "I see a backslash here:"
         , LineExerpt <| pointAtCode source backslashLoc
         , PlainText "Which normally means that I'm about to parse an escaped newline, but instead, I see:"
-        , LineExerpt <| pointAtCode source nextCharOrEof
+        , LineExerpt <| pointAtCode source nextChar
         , PlainText "Maybe you forgot to include a double slash (//) to start a comment?"
         ]
     MalformedNodeComponent            {{-nodeStart,-} badElement}              ->
@@ -1322,6 +1384,12 @@ getErrorMessage source p = case p of
             , LineExerpt <| editThenExerpt source replaceWith prefixLoc
             ]
 
+{-| Strip most formatting from a [`Message`][] and render it to a string
+
+If possible, it's nice to write a bespoke translator from [`Message`][] into whatever rich text formatting you're using to display to the user (most likely HTML), but this method provides a simple alternative if you're so inclined.
+
+[`Message`]: Kdl.Parse#Message
+-}
 messageToString : Int -> Message -> String
 messageToString =
     let
