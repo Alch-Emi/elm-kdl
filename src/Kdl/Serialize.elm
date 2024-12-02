@@ -1,4 +1,9 @@
-module Kdl.Serialize exposing (serialize)
+module Kdl.Serialize exposing (document)
+
+{-| Turn KDL documents into `String`s
+
+@docs document
+-}
 
 import Kdl exposing (KdlNumber(..), Node(..), Value, ValueContents(..))
 import Kdl.Shared exposing (checkForIllegalBareStrings, illegalCharacter)
@@ -219,5 +224,5 @@ serializeDocument = List.map serializeNode >> concatBags
 
 {-| Convert a KDL document into a `String`
 -}
-serialize : List (Node l ValueContents) -> String
-serialize = serializeDocument >> linesToString
+document : List (Node l ValueContents) -> String
+document = serializeDocument >> linesToString

@@ -8,7 +8,7 @@ import Html.Events exposing (onInput)
 import Html.Keyed as Keyed
 import Http exposing (emptyBody, expectString, stringResolver, Response(..))
 import Kdl.Parse exposing (getErrorMessage, messageToString, parse, Problem)
-import Kdl.Serialize exposing (serialize)
+import Kdl.Serialize as Serialize
 import Kdl.Util exposing (flip, k, maybe, result)
 import List exposing (filter, map)
 import Platform.Cmd as Cmd
@@ -96,7 +96,7 @@ update msg model = case msg of
     TestDataLoaded testName (input, expected) -> case model of
         RunningTests tests ->
             let
-                parseResult = parse input |> Result.map (serialize >> trim)
+                parseResult = parse input |> Result.map (Serialize.document >> trim)
                 updatedTests = Dict.insert testName (Just (input, expected, parseResult)) tests
                 nextTestToLoad = getNextTest updatedTests
                 loadNextTest = maybe Cmd.none loadTestData nextTestToLoad

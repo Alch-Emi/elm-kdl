@@ -5,7 +5,7 @@ import Html exposing (..)
 import Html.Attributes exposing (..)
 import Html.Events exposing (onInput)
 import Kdl.Parse exposing (parse, getErrorMessage, messageToString)
-import Kdl.Serialize exposing (serialize)
+import Kdl.Serialize as Serialize
 import Kdl.Util exposing (k)
 
 main = Browser.sandbox
@@ -18,7 +18,7 @@ view : String -> Html String
 view s =
     let
         rightText = case parse s of
-            Ok kdl -> serialize kdl
+            Ok kdl -> Serialize.document kdl
             Err e -> getErrorMessage s e |> messageToString 4
     in div
         [ style "display" "grid"
