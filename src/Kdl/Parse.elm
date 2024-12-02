@@ -11,7 +11,7 @@ import Char exposing (isDigit, toCode)
 import Dict
 import List exposing (member)
 import Maybe exposing (withDefault)
-import Parser.Advanced as Parser exposing (DeadEnd, Parser, Nestable(..), Token(..), (|.), (|=), andThen, backtrackable, chompIf, chompUntil, chompUntilEndOr, chompWhile, commit, end, getChompedString, getOffset, getSource, getPosition, inContext, lazy,mapChompedString, problem, oneOf, succeed, symbol, variable)
+import Parser.Advanced as Parser exposing (DeadEnd, Parser, Nestable(..), Token(..), (|.), (|=), andThen, backtrackable, chompIf, chompUntil, chompWhile, commit, end, getChompedString, getOffset, getSource, getPosition, inContext, lazy,mapChompedString, problem, oneOf, succeed, symbol, variable)
 import String
 import Set
 
@@ -588,8 +588,8 @@ parseMultilineComment =
 parseLineComment : Parser Context PProblem ()
 parseLineComment =
     symbol (Token "//" <| PExpecting "linecomment")
-    |. chompUntilEndOr "\n"
-    |. (optional () <| chompIf ((==) '\n') (PExpecting "linecomment newline"))
+    |. chompWhile (not << unicodeNewline)
+    |. (optional () <| chompIf unicodeNewline (PExpecting "linecomment newline"))
     |> inContext WithinComment
 
 ws : Parser Context PProblem ()
