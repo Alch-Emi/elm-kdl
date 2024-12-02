@@ -39,6 +39,7 @@ type PProblem
     | PMalformedNumber
     | PPrelocated Problem
     | PLonelyType SourceRange
+    | POldStyleRawString
 
 type StringType
     = Raw
@@ -344,6 +345,18 @@ parseRawString =
         )
         |> inContext WithinRawString
 
+catchOldStyleRawString : Parser Context PProblem a
+catchOldStyleRawString =
+    (
+        succeed identity
+        |. symbol (Token "r" (PExpecting "r"))
+        |. chompWhile ((==) '#')
+        |. chompIf ((==) '"') (PExpecting "\"")
+        |> backtrackable
+    )
+    |= problem (POldStyleRawString)
+    |> inContext WithinString
+
 parseKeyword : Parser Context PProblem ValueContents
 parseKeyword =
     succeed identifyKeyword
@@ -477,6 +490,7 @@ parseValue =
         parseBody =  oneOf
             [ parseKeyword
             , parseNumberVal
+            , catchOldStyleRawString
             , parseStringVal
             ]
     in
@@ -782,6 +796,7 @@ type Problem
     | MultilineStringMismatchedPrefixSpace {strLoc: SourceRange, offendingChar: Position, expected: Char, got: Char}
     | LonelyType {ofValue: Bool, typeLoc: SourceRange, stuckAt: Position}
     | TooManyChildBlocks ({ nodeLoc : SourceRange, firstBlock : SourceRange, secondBlock : SourceRange })
+    | OldStyleRawString { prefixLoc: SourceRange }
 
 type alias DefaultContextFrame = {row: Int, col: Int, context: Context}
 type MyContextFrame = ContextFrame Context Position
@@ -922,6 +937,10 @@ translateDeadEnd {row, col, contextStack, problem} =
                 ContextFrame typeOf _ :: _ ->
                     LonelyType {ofValue = typeOf == WithinValue, typeLoc = typeLoc, stuckAt = finalPosition}
                 _ -> Unexpected finalPosition "Encountered a PLonelyType while not parsing anything"
+            POldStyleRawString -> case myContextStack of
+                ContextFrame WithinString prefixStart :: _ ->
+                    OldStyleRawString {prefixLoc = (prefixStart, posPlus -1 finalPosition) }
+                _ -> Unexpected finalPosition "Encountered a POldStyleRawString while not parsing a string"
 
 type MessageComponent
     = PlainText String
@@ -1289,6 +1308,19 @@ getErrorMessage source p = case p of
         , LineExerpt <| pointAtCode source (Tuple.first nodeLoc)
         , PlainText "But any single node can only have one block of child nodes.  Maybe you meant to create another node to hold the second block?\n\n"
         ]
+    OldStyleRawString {prefixLoc} ->
+        let
+            originalPrefix = getTextUnderRange prefixLoc source
+            originalPrefixLength = String.length originalPrefix
+            replaceWith = if originalPrefixLength == 2
+                then "#\""
+                else String.dropLeft 1 originalPrefix
+        in
+            [ PlainText "It looks like you're trying to use old-style raw string syntax here:"
+            , LineExerpt <| exerptCode source prefixLoc
+            , PlainText "As of KDL 2.0, you don't need the 'r' before the pound signs (#) when writing raw strings anymore.  That means you could just write this raw string like this:"
+            , LineExerpt <| editThenExerpt source replaceWith prefixLoc
+            ]
 
 messageToString : Int -> Message -> String
 messageToString =
