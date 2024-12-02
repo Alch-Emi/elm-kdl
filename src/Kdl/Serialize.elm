@@ -1,4 +1,4 @@
-module Kdl.Serialize exposing (..)
+module Kdl.Serialize exposing (serialize)
 
 import Kdl exposing (KdlNumber(..), Node(..), Value, ValueContents(..))
 import Kdl.Shared exposing (checkForIllegalBareStrings, illegalCharacter)
@@ -6,7 +6,6 @@ import Kdl.Util exposing (flip, toHex)
 
 import BigInt
 import BigRational exposing (BigRational)
-import BigInt exposing (BigInt)
 import Dict exposing (Dict)
 import Maybe exposing (withDefault)
 
@@ -71,16 +70,6 @@ indent = mapBag (prependBag indentB)
 linesToString : Lines -> String
 linesToString = bindBag (flip prependBag newlineB) >> strConcatBag
 
-replaceToBag : String -> String -> String -> Line
-replaceToBag from to =
-    String.split from
-    >> List.map singletonBag
-    >> List.intersperse (singletonBag to)
-    >> concatBags
-
-lineReplace : String -> String -> Line -> Line
-lineReplace from to = bindBag (replaceToBag from to)
-
 ----------------------------------------------------
 
 escapes : Dict Char Char
@@ -109,9 +98,6 @@ quoteB = singletonBag "\""
 
 eB : Bag String
 eB = singletonBag "E"
-
-dotB : Bag String
-dotB = singletonBag "."
 
 minusB : Bag String
 minusB = singletonBag "-"
@@ -147,12 +133,6 @@ zero = BigRational.fromInt 0
 
 ten : BigRational
 ten = BigRational.fromInt 10
-
-eqZI : BigInt -> Bool
-eqZI = BigInt.compare (BigInt.fromInt 0) >> (==) EQ
-
-eqZR : BigRational -> Bool
-eqZR = BigRational.compare zero >> (==) EQ
 
 serializeNumberVal : BigRational -> Line
 serializeNumberVal n =
@@ -237,5 +217,7 @@ serializeNode (Node name typ args props children _) =
 serializeDocument : List (Node l ValueContents) -> Lines
 serializeDocument = List.map serializeNode >> concatBags
 
+{-| Convert a KDL document into a `String`
+-}
 serialize : List (Node l ValueContents) -> String
 serialize = serializeDocument >> linesToString
