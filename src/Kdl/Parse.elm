@@ -17,7 +17,7 @@ module Kdl.Parse exposing (parse, Problem(..), Message, MessageComponent(..), ge
 @docs TypeableThing
 -}
 
-import Kdl exposing (KdlNumber(..), Node(..), Value, ValueContents(..), LocatedNode, LocatedValue, Position, SourceRange)
+import Kdl.Types exposing (KdlNumber(..), Node(..), Value, ValueContents(..), Position, SourceRange)
 import Kdl.Shared exposing (bom, checkForIllegalBareStrings, identifierCharacter, identifyKeyword, initialCharacter, isAnyWhitespace, legalCharacter, nameWhitespace, posPlus, unicodeNewline, unicodeScalarValue, unicodeSpace)
 import Kdl.Util exposing (flip, k, maybe, orf, parseRadix, result, toHex, traverseListResult, triple, unlines)
 
@@ -75,8 +75,8 @@ type TypeableThing
     | TArgument
 
 type PropOrArg
-    = Prop String LocatedValue
-    | Arg LocatedValue
+    = Prop String Value
+    | Arg Value
 
 type Context
     = WithinNode
@@ -505,10 +505,10 @@ parseNumber =
 parseNumberVal : Parser Context PProblem ValueContents
 parseNumberVal = Parser.map NumberVal (parseNumber |> Parser.map Rational)
 
-mkLocVal : Position -> (Maybe String, ValueContents) -> Position -> LocatedValue
+mkLocVal : Position -> (Maybe String, ValueContents) -> Position -> Value
 mkLocVal s (t, v) e = Value (s, e) t v
 
-parseValue : Parser Context PProblem LocatedValue
+parseValue : Parser Context PProblem Value
 parseValue =
     let
         parseBody =  oneOf
@@ -676,9 +676,9 @@ mkNode
     : (Int, Int)
     -> (Maybe String {- type -}, String {- name -})
     -> List (Maybe PropOrArg) {- props & args -}
-    -> List (Maybe (SourceRange, List LocatedNode)) {- children -}
+    -> List (Maybe (SourceRange, List Node)) {- children -}
     -> (Int, Int)
-    -> Result PProblem LocatedNode
+    -> Result PProblem Node
 mkNode startLoc (typ, name) propsAndArgsM possibleChildBlocks endLoc =
     let
         propsAndArgs = List.filterMap identity propsAndArgsM
@@ -696,11 +696,11 @@ mkNode startLoc (typ, name) propsAndArgsM possibleChildBlocks endLoc =
         childrenWithoutComments = List.filterMap identity possibleChildBlocks
         nodeLoc = (startLoc, endLoc)
     in case childrenWithoutComments of
-        [] -> Ok <| Node name typ args props [] nodeLoc
-        [(_, children)] -> Ok <| Node name typ args props children nodeLoc
+        [] -> Ok <| Node {name=name, typ=typ, args=args, props=props, children=[], location=nodeLoc}
+        [(_, children)] -> Ok <| Node {name=name, typ=typ, args=args, props=props, children=children, location=nodeLoc}
         (l1, _) :: (l2, _) :: _ -> Err <| PPrelocated <| TooManyChildBlocks {nodeLoc = nodeLoc, firstBlock = l1, secondBlock = l2}
 
-parseNode : Parser Context PProblem (Maybe LocatedNode)
+parseNode : Parser Context PProblem (Maybe Node)
 parseNode =
     let
         nodeTerminator : Parser Context PProblem ()
@@ -711,9 +711,9 @@ parseNode =
             , lookAhead1 True (PExpecting "eof or }") ((==) '}') |> Parser.map (k ())
             , commit identity |= problem PMalformedNodeComponent
             ]
-        mkChildBlock : Position -> List LocatedNode -> Position -> (SourceRange, List LocatedNode)
+        mkChildBlock : Position -> List Node -> Position -> (SourceRange, List Node)
         mkChildBlock start nodes end = ((start, end), nodes)
-        children : Parser Context PProblem (Maybe (SourceRange, List LocatedNode))
+        children : Parser Context PProblem (Maybe (SourceRange, List Node))
         children = parseAstComment |= (
                 succeed mkChildBlock
                 |= getPosition
@@ -763,14 +763,14 @@ parseNode =
         )
         |> inContext WithinNode
 
-parseNodes : Parser Context PProblem (List LocatedNode)
+parseNodes : Parser Context PProblem (List Node)
 parseNodes =
     succeed identity
     |. star k () linespace
     |= starL (parseNode |. star k () linespace)
     |> Parser.map (List.filterMap identity)
 
-parseDocument : Parser Context PProblem (List LocatedNode)
+parseDocument : Parser Context PProblem (List Node)
 parseDocument = parseNodes |. end PInvalidIdentifier
 
 findInvalidChars : String -> Maybe Position
@@ -868,7 +868,7 @@ makeContextMatchable {row, col, context} = ContextFrame context (row, col)
 
 This always tries to parse a whole document, meaning it returns a list of nodes.  If it fails, it'll return a [`Problem`][] to give a very specific reason why it failed that you can use to give the user a description of what went wrong and potentially how to fix with it.
 -}
-parse : String -> Result Problem (List (LocatedNode))
+parse : String -> Result Problem (List (Node))
 parse s =
     case findInvalidChars s of
         Nothing ->

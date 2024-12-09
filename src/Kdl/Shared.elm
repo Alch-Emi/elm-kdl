@@ -1,6 +1,6 @@
 module Kdl.Shared exposing (bom, checkForIllegalBareStrings, identifierCharacter, identifyKeyword, illegalCharacter, initialCharacter, isAnyWhitespace, nameWhitespace, posPlus, unicodeNewline, unicodeScalarValue, unicodeSpace, legalCharacter)
 
-import Kdl exposing (KdlNumber(..), Position, ValueContents(..))
+import Kdl.Types exposing (KdlNumber(..), Position, ValueContents(..))
 import Kdl.Util exposing (andf, orf, flip, sequenceListF, toHex, withinRange)
 
 import Char exposing (isDigit)

@@ -1,4 +1,4 @@
-module Kdl.Util exposing (andf, bool, either, flip, k, liftA2f, maybe, orf, parseRadix, result, sequenceListF, sequenceListMaybe, toHex, traverseListResult, triple, unlines, withinRange)
+module Kdl.Util exposing (andf, bool, either, flip, getError, k, liftA2f, maybe, orf, parseRadix, result, sequenceListF, sequenceListMaybe, toHex, traverseListResult, triple, unlines, withinRange)
 
 import BigInt exposing (BigInt)
 import List exposing (drop, head)
@@ -104,3 +104,8 @@ bool f t b = if b then t else f
 
 triple : a -> b -> c -> (a, b, c)
 triple a b c = (a, b, c)
+
+getError : Result e v -> Maybe e
+getError r = case r of
+    Err e -> Just e
+    Ok _ -> Nothing

@@ -5,7 +5,7 @@ module Kdl.Serialize exposing (document)
 @docs document
 -}
 
-import Kdl exposing (KdlNumber(..), Node(..), Value, ValueContents(..))
+import Kdl.Types exposing (Document, KdlNumber(..), Node(..), Value, ValueContents(..))
 import Kdl.Shared exposing (checkForIllegalBareStrings, illegalCharacter)
 import Kdl.Util exposing (flip, toHex)
 
@@ -174,7 +174,7 @@ serializeType t_ = case t_ of
         ]
     Nothing -> emptyBag
 
-serializeVal : Value l ValueContents -> Line
+serializeVal : Value -> Line
 serializeVal {typestr, contents} =
     let
         typeSerialized = serializeType typestr
@@ -189,15 +189,15 @@ serializeVal {typestr, contents} =
             NullVal -> singletonBag "#null"
     in concatBags [typeSerialized, contentsSerialized]
 
-serializeProp : (String, Value l ValueContents) -> Line
+serializeProp : (String, Value) -> Line
 serializeProp (k, v) = concatBags
     [ serializeStr k
     , eqB
     , serializeVal v
     ]
 
-serializeNode : Node l ValueContents -> Lines
-serializeNode (Node name typ args props children _) = 
+serializeNode : Node -> Lines
+serializeNode (Node {name, typ, args, props, children}) =
     let
         serializedType = serializeType typ
         serializedName = concatBags [serializedType, serializeStr name]
@@ -219,10 +219,10 @@ serializeNode (Node name typ args props children _) =
             ]
         else singletonBag components
 
-serializeDocument : List (Node l ValueContents) -> Lines
+serializeDocument : List Node -> Lines
 serializeDocument = List.map serializeNode >> concatBags
 
 {-| Convert a KDL document into a `String`
 -}
-document : List (Node l ValueContents) -> String
+document : Document -> String
 document = serializeDocument >> linesToString
