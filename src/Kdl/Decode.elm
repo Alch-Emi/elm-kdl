@@ -1,4 +1,4 @@
-module Kdl.Decode exposing (decode, ValueDecoder, NodeDecoder, DocumentDecoder, map, map2, andApply, andRequire, andThen, succeed, fail, rational, float, int, string, bool, null, argument, optionalArgument, arguments, noOtherArguments, property, optionalProperty, properties, noOtherProperties, nodeName, children, noChildren, document, documentF, singleNodeDocument)
+module Kdl.Decode exposing (decode, ValueDecoder, NodeDecoder, DocumentDecoder, map, map2, andApply, andRequire, andThen, succeed, rational, float, int, string, bool, null, argument, optionalArgument, arguments, noOtherArguments, property, optionalProperty, properties, noOtherProperties, nodeName, children, noChildren, document, documentF, singleNodeDocument, failV, failN)
 
 {-| Tools for building a translator from KDL to your Elm datastructure
 
@@ -66,7 +66,6 @@ Combinators are what you use to combine decoders.  The ones in this section are 
 @docs andRequire
 @docs andThen
 @docs succeed
-@docs fail
 
 # Values
 
@@ -78,6 +77,7 @@ Values are the most basic building block of KDL, and can be used to construct de
 @docs string
 @docs bool
 @docs null
+@docs failV
 
 # Arguments
 
@@ -113,6 +113,7 @@ These decoders help you decode the children of a node.  If you don't specify eit
 These decoders help you get a little bit more information about your nodes.  Note that the [Arguments](#arguments), [Properties](#properties), and [Children](#Children) all also contain [`NodeDecoder`](#NodeDecoder)s as well, but this section is dedicated to decoders for node metadata alone.
 
 @docs nodeName
+@docs failN
 
 # Documents & Child Blocks
 
@@ -123,7 +124,7 @@ These decoders help you decode both documents and blocks of children.
 @docs singleNodeDocument
 -}
 
-import Kdl.Types exposing (Document, KdlNumber(..), Node(..), Value, ValueContents(..))
+import Kdl.Types exposing (Document, KdlNumber(..), Node(..), SourceRange, Value, ValueContents(..))
 import Kdl.Util as Util exposing (flip, k, maybe, traverseListResult)
 
 import BigRational exposing (BigRational)
@@ -140,7 +141,7 @@ All other decoders are actually specializations of this one, but I can't make it
 public otherwise Evan's spirit will come out of my computer and strangle me for
 making my library too generic, so for now we keep it as our own little secret.
 -}
-type Decoder f e t = Decoder (f -> Result e (t, f))
+type Decoder f e t = Decoder (f -> Result (e, SourceRange) (t, f))
 
 {-| A decoder for simple KDL values, like strings, numbers, and booleans
 -}
@@ -170,11 +171,11 @@ resultMapItem = Result.map << Tuple.mapFirst
 
 -- [ Core ] --
 
-run : Decoder f e t -> f -> Result e (t, f)
+run : Decoder f e t -> f -> Result (e, SourceRange) (t, f)
 run (Decoder d) = d
 
 -- "don't make your library too generic" my ass
-decode_ : Decoder f e t -> f -> Result e t
+decode_ : Decoder f e t -> f -> Result (e, SourceRange) t
 decode_ (Decoder d) = d >> Result.map Tuple.first
 
 {-| Use a decoder to decode a KDL document
@@ -184,7 +185,7 @@ how you use it.  Just provide your decoder and a [`Document`](Kdl#Document) to
 decode, and you'll either get back the data structure your decoder was designed
 for, or one of your error types if something went wrong.
 -}
-decode : DocumentDecoder e t -> Document -> Result e t
+decode : DocumentDecoder e t -> Document -> Result (e, SourceRange) t
 decode = decode_
 
 -- [ Combinators ] --
@@ -284,19 +285,12 @@ andThen f i = Decoder
 succeed : t -> Decoder f e t
 succeed v = pair v >> Ok |> Decoder
 
-{-| A decoder which always fails with an error of your choice
-
-**Note:**  This combinator is generic, and can be used with any of the three decoders in this module.
--}
-fail : e -> Decoder f e t
-fail = Err >> k >> Decoder
-
 -- [ Values ] --
 
 {-| The basis of all value decoders
 -}
 value : (ValueContents -> Maybe t) -> e -> ValueDecoder e t
-value f typeError = andThen (f >> maybe (fail typeError) succeed) (arr .contents)
+value f typeError = andThen (f >> maybe (failV typeError) succeed) (arr .contents)
     -- (\({contents} as v) -> case f contents of
     --     Nothing -> Err typeError
     --     Just result -> Ok (result, v)
@@ -402,51 +396,59 @@ null = value
             _ -> Nothing
     )
 
+{-| A decoder which always fails with an error of your choice rather than parsing a value
+-}
+failV : e -> ValueDecoder e never
+failV e = Decoder (.location >> pair e >> Err)
+
 -- [ Node Helpers ] --
+
+-- please sir one touch of ∀
+type alias Lifter from to e t = (SourceRange -> Decoder from e t) -> Decoder to e t
 
 {-| Helper function for mapping the argument list of a node
 -}
-lArgs : Decoder (List Value) e t -> Decoder Node e t
+lArgs : Lifter (List Value) (Node) e t
 lArgs d = Decoder
-    (\(Node ({args} as node)) ->
-        run d args
+    (\(Node ({args, location} as node)) ->
+        run (d location) args
         |> Result.map (Tuple.mapSecond (\a -> Node {node | args = a}))
     )
 
 {-| Helper function for mapping the properties of a node
 -}
-lProps : Decoder (Dict String Value) e t -> Decoder Node e t
+lProps : Lifter (Dict String Value) Node e t
 lProps d = Decoder
-    (\(Node ({props} as node)) ->
-        run d props
+    (\(Node ({props, location} as node)) ->
+        run (d location) props
         |> Result.map (Tuple.mapSecond (\a -> Node {node | props = a}))
     )
 
 {-| Helper function for mapping the children of a node
 -}
-lChildren : Decoder Document e t -> Decoder Node e t
+lChildren : Lifter Document Node e t
 lChildren d = Decoder
-    (\(Node node) ->
-        run d (node.children)
+    (\(Node ({location} as node)) ->
+        run (d location) (node.children)
         |> Result.map (Tuple.mapSecond (\a -> Node {node | children = a}))
     )
 
 {-| Parse one of something
 -}
-single : (Decoder (List v) e t -> Decoder n e t) -> e -> Decoder v e t -> Decoder n e t
-single lift ifAbsent decodeValue = lift <| Decoder
+single : Lifter (List v) n e t -> e -> Decoder v e t -> Decoder n e t
+single lift ifAbsent decodeValue = lift <| (\loc -> Decoder
     (\l ->
         case l of
-            [] -> Err ifAbsent
+            [] -> Err (ifAbsent, loc)
             h :: t ->
                 run decodeValue h
                 |> resultSetCarry t
-    )
+    ))
 
 {-| Parse zero or one of something
 -}
-optional : (Decoder (List v) e (Maybe t) -> Decoder n e (Maybe t)) -> Decoder v e t -> Decoder n e (Maybe t)
-optional lift decodeValue = lift <| Decoder
+optional : Lifter (List v) n e (Maybe t) -> Decoder v e t -> Decoder n e (Maybe t)
+optional lift decodeValue = lift <| k <| Decoder
     (\l ->
         case l of
             [] -> Ok (Nothing, [])
@@ -458,20 +460,15 @@ optional lift decodeValue = lift <| Decoder
 
 {-| Parse several of something
 -}
-multiple : (Decoder (List v) e (List t) -> Decoder n e (List t)) -> Decoder v e t -> Decoder n e (List t)
+multiple : Lifter (List v) n e (List t) -> Decoder v e t -> Decoder n e (List t)
 multiple lift (Decoder decodeValue) =
     let
-        aux : List v -> Result e ( List t, List never )
+        aux : List v -> Result (e, SourceRange) (List t, List never)
         aux inList =
             case inList of
                 [] -> Ok ([], [])
                 h :: t -> flip Result.andThen (decodeValue h) (\(hResult, _) -> resultMapItem ((::) hResult) (aux t))
-    in lift (Decoder aux)
-
-{-| Ensure that a list is empty
--}
-nothingElse :  (Decoder (List v) e () -> Decoder n e ()) -> e -> Decoder n e ()
-nothingElse lift e = List.isEmpty >> Util.bool (Err e) (Ok ((), [])) |> Decoder |> lift
+    in lift (k <| Decoder aux)
 
 -- [ Arguments ] --
 
@@ -533,7 +530,7 @@ This mirrors the behavior of [`noOtherProperties`](#noOtherProperties) but for a
 [`arguments`]: #arguments
 -}
 noOtherArguments : e -> Decoder Node e ()
-noOtherArguments = nothingElse lArgs
+noOtherArguments = failV >> optional lArgs >> map (k ())
 
 -- [ Properties ] --
 
@@ -548,12 +545,12 @@ This function mirrors the behavior of [`argument`](#argument) but for properties
 [`noOtherProperties`]: #noOtherProperties
 -}
 property : e -> String -> ValueDecoder e t -> NodeDecoder e t
-property ifAbsent propertyKey decodePropertyValue = lProps <| Decoder
+property ifAbsent propertyKey decodePropertyValue = lProps <| (\location -> Decoder
     (\args ->
         case Dict.get propertyKey args of
             Just val -> run decodePropertyValue val |> resultSetCarry (Dict.remove propertyKey args)
-            Nothing -> Err ifAbsent
-    )
+            Nothing -> Err (ifAbsent, location)
+    ))
 
 {-| Optionally decode a property
 
@@ -566,7 +563,7 @@ As with other node decoders, you'll probably want to chain this with other decod
 This mirrors the behavior of [`optionalArgument`](#optionalArgument) for properties rather than arguments.
 -}
 optionalProperty : String -> ValueDecoder e t -> NodeDecoder e (Maybe t)
-optionalProperty propertyKey decodePropertyValue = lProps <| Decoder
+optionalProperty propertyKey decodePropertyValue = lProps <| k <| Decoder
     (\args ->
         case Dict.get propertyKey args of
             Just val -> run decodePropertyValue val
@@ -589,7 +586,7 @@ This mirrors the behavior of [`arguments`](#arguments) but for properties rather
 [`optionalProperty`]: #optionalProperty
 -}
 properties : ValueDecoder e t -> NodeDecoder e (Dict String t)
-properties decodePropertyValue = lProps <| Decoder
+properties decodePropertyValue = lProps <| k <| Decoder
     (\args ->
         Dict.toList args
             |> traverseListResult (\(key, val) ->
@@ -611,22 +608,14 @@ By default, if there are properties which don't get decoded, they are simply ign
 This mirrors the behavior of [`noOtherArguments`](#noOtherArguments) but for properties rather than arguments.
 -}
 noOtherProperties : e -> NodeDecoder e ()
-noOtherProperties ifExtraNodes =  lProps <| Decoder
+noOtherProperties ifExtraNodes =  lProps <| k <| Decoder
     (\args ->
-        if Dict.isEmpty args
-            then Ok ((), args)
-            else Err ifExtraNodes
+        case List.head <| Dict.toList args of
+            Nothing -> Ok ((), args)
+            Just (_, propVal) -> Err (ifExtraNodes, propVal.location) 
     )
 
-{-| Decode a node, yeilding its name
-
-It's still possible to decode other parts of the node using other node decoders.  It's often helpful to use a pattern like the one demonstrated in the example of [`andApply`](#andApply).  If you just need to check that the name is equal to a certain value, you might prefer [`assertNodeName`](#assertNodeName).
--}
-nodeName : NodeDecoder e String
-nodeName = Decoder
-    (\((Node {name}) as inputNode) ->
-        Ok (name, inputNode)
-    )
+-- [ Children ] --
 
 {-| Parse the children of a node
 
@@ -637,7 +626,7 @@ By default, any child nodes are simply ignored without fanfare, but you can spec
 See also:  [`document`](#document)
 -}
 children : Decoder Document e t -> Decoder Node e t
-children = lChildren
+children = k >> lChildren
 
 {-| Assert that a node does not have any children
 
@@ -650,10 +639,30 @@ See also:  [`children`](#children), [`emptyDocument`](#emptyDocument)
 noChildren : e -> Decoder Node e ()
 noChildren = emptyDocument >> children
 
+-- [ Nodes ] --
+
+{-| Decode a node, yeilding its name
+
+It's still possible to decode other parts of the node using other node decoders.  It's often helpful to use a pattern like the one demonstrated in the example of [`andApply`](#andApply).  If you just need to check that the name is equal to a certain value, you might prefer [`assertNodeName`](#assertNodeName).
+-}
+nodeName : NodeDecoder e String
+nodeName = Decoder
+    (\((Node {name}) as inputNode) ->
+        Ok (name, inputNode)
+    )
+
 oneOfNodeF : (String -> Decoder Node e t) -> Decoder Node e t
 oneOfNodeF lookupNode = andThen lookupNode nodeName
 
+{-| A decoder which always fails with an error of your choice rather than parsing a node
+-}
+failN : e -> NodeDecoder e never
+failN e = Decoder (\(Node {location}) -> Err (e, location))
+
 -- [ Document ] --
+
+lDoc : Lifter Document Document e t
+lDoc = (|>) ((0,0),(0,0)) --TODO
 
 {-| Decode a docmunt with an arbitrary number of nodes
 
@@ -665,8 +674,7 @@ For a more powerful version of this, see [`documentF`](#documentF).
 -}
 document : e -> Dict String (Decoder Node e t) -> Decoder Document e (List t)
 document ifUnrecognized namedNodeDecoders =
-    oneOfNodeF (flip Dict.get namedNodeDecoders >> Maybe.withDefault (fail ifUnrecognized))
-    |> multiple identity
+    documentF (flip Dict.get namedNodeDecoders >> Maybe.withDefault (failN ifUnrecognized))
 
 {-| Decode a document with an arbitrary number of nodes, and the power to choose which decoder to use based on an algorithm
 
@@ -679,7 +687,7 @@ for choosing a subsequent decoder.
 [`document`]: #document
 -}
 documentF : (String -> Decoder Node e t) -> Decoder Document e (List t)
-documentF = oneOfNodeF >> multiple identity
+documentF = oneOfNodeF >> multiple lDoc
 
 {-| Decode a document with exactly one node
 
@@ -690,14 +698,14 @@ The next two arguments specify the expected name of the node and the [`NodeDecod
 singleNodeDocument : e -> e -> e -> String -> Decoder Node e t -> Decoder Document e t
 singleNodeDocument ifAbsent ifTooMany ifUnrecognized expectedName decodeNode =
     nodeName
-    |> andThen ((==) expectedName >> Util.bool (fail ifUnrecognized) (succeed identity))
+    |> andThen ((==) expectedName >> Util.bool (failN ifUnrecognized) (succeed identity))
     |> andApply decodeNode
-    |> single identity ifAbsent
-    |> andRequire (nothingElse identity ifTooMany)
+    |> single lDoc ifAbsent
+    |> andRequire (emptyDocument ifTooMany)
 
 {-| Only succeed when a document is completely empty
 
 The first argument is the error to produce if any nodes are present at all.
 -}
 emptyDocument : e -> Decoder Document e ()
-emptyDocument = nothingElse identity
+emptyDocument = failN >> optional lDoc >> map (k ())

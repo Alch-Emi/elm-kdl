@@ -197,7 +197,7 @@ serializeProp (k, v) = concatBags
     ]
 
 serializeNode : Node -> Lines
-serializeNode (Node {name, typ, args, props, children}) =
+serializeNode (Node {name, typ, args, props, children}) = 
     let
         serializedType = serializeType typ
         serializedName = concatBags [serializedType, serializeStr name]
