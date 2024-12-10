@@ -1,4 +1,4 @@
-module Kdl.Util exposing (andf, bool, either, flip, getError, k, liftA2f, maybe, orf, parseRadix, result, sequenceListF, sequenceListMaybe, toHex, traverseListResult, triple, unlines, withinRange)
+module Kdl.Util exposing (andf, bool, either, flip, getError, k, liftA2f, maybe, orf, parseRadix, result, sequenceListF, sequenceListMaybe, toHex, traverseListResult, triple, uncons, uncurry, unlines, withinRange)
 
 import BigInt exposing (BigInt)
 import List exposing (drop, head)
@@ -109,3 +109,11 @@ getError : Result e v -> Maybe e
 getError r = case r of
     Err e -> Just e
     Ok _ -> Nothing
+
+uncons : List a -> Maybe (a, List a)
+uncons l = case l of
+    h :: t -> Just (h, t)
+    [] -> Nothing
+
+uncurry : (a -> b -> c) -> ( a, b ) -> c
+uncurry f (a, b) = f a b

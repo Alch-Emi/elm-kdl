@@ -17,7 +17,7 @@ module Kdl.Parse exposing (parse, Problem(..), Message, MessageComponent(..), ge
 @docs TypeableThing
 -}
 
-import Kdl.Types exposing (KdlNumber(..), Node(..), Value, ValueContents(..), Position, SourceRange)
+import Kdl.Types exposing (Document, KdlNumber(..), Node(..), Value, ValueContents(..), Position, SourceRange)
 import Kdl.Shared exposing (bom, checkForIllegalBareStrings, identifierCharacter, identifyKeyword, initialCharacter, isAnyWhitespace, legalCharacter, nameWhitespace, posPlus, unicodeNewline, unicodeScalarValue, unicodeSpace)
 import Kdl.Util exposing (flip, k, maybe, orf, parseRadix, result, toHex, traverseListResult, triple, unlines)
 
@@ -676,7 +676,7 @@ mkNode
     : (Int, Int)
     -> (Maybe String {- type -}, String {- name -})
     -> List (Maybe PropOrArg) {- props & args -}
-    -> List (Maybe (SourceRange, List Node)) {- children -}
+    -> List (Maybe Document) {- children -}
     -> (Int, Int)
     -> Result PProblem Node
 mkNode startLoc (typ, name) propsAndArgsM possibleChildBlocks endLoc =
@@ -696,9 +696,9 @@ mkNode startLoc (typ, name) propsAndArgsM possibleChildBlocks endLoc =
         childrenWithoutComments = List.filterMap identity possibleChildBlocks
         nodeLoc = (startLoc, endLoc)
     in case childrenWithoutComments of
-        [] -> Ok <| Node {name=name, typ=typ, args=args, props=props, children=[], location=nodeLoc}
-        [(_, children)] -> Ok <| Node {name=name, typ=typ, args=args, props=props, children=children, location=nodeLoc}
-        (l1, _) :: (l2, _) :: _ -> Err <| PPrelocated <| TooManyChildBlocks {nodeLoc = nodeLoc, firstBlock = l1, secondBlock = l2}
+        [] -> Ok <| Node {name=name, typ=typ, args=args, props=props, children=([], (endLoc, endLoc)), location=nodeLoc}
+        [children] -> Ok <| Node {name=name, typ=typ, args=args, props=props, children=children, location=nodeLoc}
+        (_, l1) :: (_, l2) :: _ -> Err <| PPrelocated <| TooManyChildBlocks {nodeLoc = nodeLoc, firstBlock = l1, secondBlock = l2}
 
 parseNode : Parser Context PProblem (Maybe Node)
 parseNode =
@@ -711,9 +711,9 @@ parseNode =
             , lookAhead1 True (PExpecting "eof or }") ((==) '}') |> Parser.map (k ())
             , commit identity |= problem PMalformedNodeComponent
             ]
-        mkChildBlock : Position -> List Node -> Position -> (SourceRange, List Node)
-        mkChildBlock start nodes end = ((start, end), nodes)
-        children : Parser Context PProblem (Maybe (SourceRange, List Node))
+        mkChildBlock : Position -> List Node -> Position -> Document
+        mkChildBlock start nodes end = (nodes, (start, end))
+        children : Parser Context PProblem (Maybe Document)
         children = parseAstComment |= (
                 succeed mkChildBlock
                 |= getPosition
@@ -770,8 +770,16 @@ parseNodes =
     |= starL (parseNode |. star k () linespace)
     |> Parser.map (List.filterMap identity)
 
-parseDocument : Parser Context PProblem (List Node)
-parseDocument = parseNodes |. end PInvalidIdentifier
+parseDocument : Parser Context PProblem Document
+parseDocument =
+    let
+        mkDocument start nodes end = (nodes, (start, end))
+    in
+        succeed mkDocument
+        |= getPosition
+        |= parseNodes
+        |= getPosition
+        |. end PInvalidIdentifier
 
 findInvalidChars : String -> Maybe Position
 findInvalidChars =
@@ -868,7 +876,7 @@ makeContextMatchable {row, col, context} = ContextFrame context (row, col)
 
 This always tries to parse a whole document, meaning it returns a list of nodes.  If it fails, it'll return a [`Problem`][] to give a very specific reason why it failed that you can use to give the user a description of what went wrong and potentially how to fix with it.
 -}
-parse : String -> Result Problem (List (Node))
+parse : String -> Result Problem Document
 parse s =
     case findInvalidChars s of
         Nothing ->

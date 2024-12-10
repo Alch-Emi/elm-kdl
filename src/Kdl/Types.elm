@@ -25,7 +25,7 @@ type Node = Node
     , typ       : Maybe String
     , args      : List Value
     , props     : Dict String Value
-    , children  : List Node
+    , children  : Document
     , location  : SourceRange
     }
 
@@ -33,7 +33,7 @@ type Node = Node
 
 There can be several nodes with the same name, or no nodes at all!
 -}
-type alias Document = List Node
+type alias Document = (List Node, SourceRange)
 
 {-| A basic KDL value.  Represents anything that can be used as an argument to a node or the value of a property.
 
