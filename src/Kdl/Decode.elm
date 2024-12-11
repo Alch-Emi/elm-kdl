@@ -1,4 +1,4 @@
-module Kdl.Decode exposing (decode, ValueDecoder, NodeDecoder, DocumentDecoder, map, map2, andApply, andRequire, andThen, succeed, rational, float, int, string, bool, null, argument, optionalArgument, arguments, noOtherArguments, property, optionalProperty, properties, noOtherProperties, nodeName, children, noChildren, document, documentF, singleNodeDocument, failV, failN, oneOfV)
+module Kdl.Decode exposing (decode, ValueDecoder, NodeDecoder, DocumentDecoder, map, map2, andApply, andRequire, andThen, succeed, rational, float, int, string, bool, null, argument, optionalArgument, arguments, noOtherArguments, property, optionalProperty, properties, noOtherProperties, nodeName, children, noChildren, document, documentF, singleNodeDocument, guardV, guardN, failV, failN, oneOfV)
 
 {-| Tools for building a translator from KDL to your Elm datastructure
 
@@ -77,6 +77,7 @@ Values are the most basic building block of KDL, and can be used to construct de
 @docs string
 @docs bool
 @docs null
+@docs guardV
 @docs failV
 @docs oneOfV
 
@@ -114,6 +115,7 @@ These decoders help you decode the children of a node.  If you don't specify eit
 These decoders help you get a little bit more information about your nodes.  Note that the [Arguments](#arguments), [Properties](#properties), and [Children](#Children) all also contain [`NodeDecoder`](#NodeDecoder)s as well, but this section is dedicated to decoders for node metadata alone.
 
 @docs nodeName
+@docs guardN
 @docs failN
 
 # Documents & Child Blocks
@@ -355,6 +357,15 @@ andThen f i = Decoder
 succeed : t -> Decoder f e t
 succeed v = pair v >> Ok |> Decoder
 
+{-| The abstraction that gives us [`guardV`](#guardV) and [`guardN`](#guardN)
+-}
+guard : (e -> Decoder f e Never) -> e -> (t -> Bool) -> Decoder f e t -> Decoder f e t
+guard fail_ ifFail predicate = andThen (\v ->
+        if predicate v
+            then succeed v
+            else fail_ ifFail |> map never
+    )
+
 {-| A decoder that always fails regardless of input
 -}
 fail : (e, SourceRange) -> Decoder any e never
@@ -470,6 +481,25 @@ null = value
             NullVal -> Just ()
             _ -> Nothing
     )
+
+{-| Require that a condition be true of the value returned by a [`ValueDecoder`](#ValueDecoder)
+
+If that condition isn't true, then an error of your choice is raised.  Here's
+a simple example.  Say you want a node `count` that only accepts non-negative
+integers as an argument.  You could describe this node like this:
+
+    decodeCount =
+        argument "count needs 1 argument" (
+            int "argument must be an integer"
+            |> guardV "can't have a negative count!" (\x -> x >= 0)
+        )
+        |> andRequire (noOtherArguments "too many arguments on count!")
+        |> singleNodeDocument "missing node!" "extra node!" "unrecognized node!" "count"
+
+See also: [`guardN`](#guardN), the [`NodeDecoder`](#NodeDecoder) equivalent of this function
+-}
+guardV : e -> (t -> Bool) -> ValueDecoder e t -> ValueDecoder e t
+guardV = guard failV
 
 {-| A decoder which always fails with an error of your choice rather than parsing a value
 -}
@@ -738,6 +768,23 @@ nodeLocation = Decoder
 oneOfNodeF : (String -> Decoder Node e t) -> Decoder Node e t
 oneOfNodeF lookupNode = andThen lookupNode nodeName
 
+{-| Require that a condition be true of the value returned by a [`NodeDecoder`](#NodeDecoder)
+
+If that condition isn't true, then an error of your choice is raised.  Here's
+one way you could use this to parse a list that needs at least three elments:
+
+    -- Decodes "favorite-things \"raindrops on roses\" \"whiskers on kittens\" \"bright copper kettles\""
+    -- But fails on "favorite-things \"pussy willows\" \"christmas\""
+    decodeFavoriteThings =
+        arguments (string "your favorite things must be strings!")
+        |> guardN "You need to least at least three of your favorite things" (\l -> length l >= 3)
+        |> singleNodeDocument "missing node!" "extra node!" "unrecognized node!" "favorite-things"
+
+See also: [`guardV`](#guardV), the [`ValueDecoder`](#ValueDecoder) equivalent of this function
+-}
+guardN : e -> (t -> Bool) -> NodeDecoder e t -> NodeDecoder e t
+guardN = guard failN
+
 {-| A decoder which always fails with an error of your choice rather than parsing a node
 -}
 failN : e -> NodeDecoder e never
@@ -796,7 +843,8 @@ The next two arguments specify the expected name of the node and the [`NodeDecod
 singleNodeDocument : e -> e -> e -> String -> Decoder Node e t -> Decoder Document e t
 singleNodeDocument ifAbsent ifTooMany ifUnrecognized expectedName decodeNode =
     nodeName
-    |> andThen ((==) expectedName >> Util.bool (failN ifUnrecognized) (succeed identity))
+    |> guardN ifUnrecognized ((==) expectedName)
+    |> map (k identity)
     |> andApply decodeNode
     |>
         (
