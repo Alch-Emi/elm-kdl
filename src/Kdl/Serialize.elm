@@ -199,6 +199,7 @@ serializeProp (k, v) = concatBags
 serializeNode : Node -> Lines
 serializeNode (Node {name, typ, args, props, children}) = 
     let
+        (childNodes, _) = children
         serializedType = serializeType typ
         serializedName = concatBags [serializedType, serializeStr name]
         serializedArgs = concatSepBags spaceB <| List.map serializeVal args
@@ -206,12 +207,12 @@ serializeNode (Node {name, typ, args, props, children}) =
             |> List.sortBy Tuple.first
             |> List.map serializeProp
             |> concatSepBags spaceB
-        serializedChildren = List.map serializeNode children
+        serializedChildren = List.map serializeNode childNodes
             |> concatBags
         components = [serializedName, serializedArgs, serializedProps]
             |> List.filter (anyBag (not << String.isEmpty))
             |> concatSepBags spaceB
-    in if List.length children > 0
+    in if List.length childNodes > 0
         then concatBags
             [ singletonBag <| concatSepBags spaceB [components, ocurlB]
             , indent serializedChildren
@@ -219,8 +220,8 @@ serializeNode (Node {name, typ, args, props, children}) =
             ]
         else singletonBag components
 
-serializeDocument : List Node -> Lines
-serializeDocument = List.map serializeNode >> concatBags
+serializeDocument : Document -> Lines
+serializeDocument = Tuple.first >> List.map serializeNode >> concatBags
 
 {-| Convert a KDL document into a `String`
 -}
