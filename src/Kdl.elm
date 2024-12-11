@@ -3,6 +3,7 @@ module Kdl exposing (Document, SourceRange)
 {-| General types and functions which are used throughout the library
 
 @docs Document
+@docs SourceRange
 -}
 
 import Kdl.Types
