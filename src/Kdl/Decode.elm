@@ -372,9 +372,9 @@ value f typeError = andThen (f >> maybe (failV typeError) succeed) (arr .content
 
 {-| Decode any rational number
 
-This will handle integers, numbers with decimals, and even numbers with exponents, like `120.9312e100`, however, it can't decode special "numbers" like NaN (`#nan`) or infinity (`#inf`), and will return its `ifWrongType` value if applied to any of these. 
+This will handle integers, numbers with decimals, and even numbers with exponents, like `120.9312e100`, however, it can't decode special "numbers" like NaN (`#nan`) or infinity (`#inf`), and will return its first argument as an error if applied to any of these.
 
-Of course, this will also give its `ifWrongType` error when applied to non-numeric data, like strings or booleans.
+Of course, this will also give its first argument as an error when applied to non-numeric data, like strings or booleans.
 -}
 rational : e -> ValueDecoder e BigRational
 rational = value (\v -> case v of
@@ -386,7 +386,7 @@ rational = value (\v -> case v of
 
 Unlike [`rational`](#rational), this can decode values like NaN (`#nan`) and infinity (`#inf`), but may not necessarily represent a number with maximal position, and can introduce minor numeric errors, so isn't ideal for situations where absolute accuracy is important.
 
-This will also give its `ifWrongType` error when applied to non-numeric data, like strings or booleans.
+This will also give its first argument as an error when applied to non-numeric data, like strings or booleans.
 -}
 float : e -> ValueDecoder e Float
 float = value
@@ -402,11 +402,11 @@ float = value
 
 {-| Decode a number as an integer
 
-This will decode a value as an integer.  However, it will fail (and return its `ifWrongType` error) if used to decode non-integer data, or any numbers too large or to small to be represented by Elm's `Int` type.
+This will decode a value as an integer.  However, it will fail (and return its first argument as an error) if used to decode non-integer data, or any numbers too large or to small to be represented by Elm's `Int` type.
 
 Note that `1.1e1` and `1.0` *are* considered integers.
 
-This will also give its `ifWrongType` error when applied to non-numeric data, like strings or booleans.
+This will also give its first argument as an error when applied to non-numeric data, like strings or booleans.
 -}
 int : e -> ValueDecoder e Int
 int = value
@@ -431,7 +431,7 @@ int = value
 
 This will decode any quoted string, bare string, raw string, or multiline string of any variety into an Elm `String`
 
-This will give its `ifWrongType` error when applied to non-string data, like numbers or booleans.
+This will return its first argument as an error when applied to non-string data, like numbers or booleans.
 -}
 string : e -> ValueDecoder e String
 string = value
@@ -445,7 +445,7 @@ string = value
 
 This will decode `#true` and `#false` into their Elm `Bool` equivalents
 
-This will give its `ifWrongType` error when applied to non-boolean data, like numbers or strings.
+This will return its first argument as an error when applied to non-boolean data, like numbers or strings.
 -}
 bool : e -> ValueDecoder e Bool
 bool = value
@@ -460,7 +460,7 @@ bool = value
 
 This decoder only succeeds when applied to the KDL value `#null`.  Its return value is always `unit`, aka the empty tuple, aka `()`.
 
-This will give its `ifWrongType` error when applied to anything other then `#null`.
+This will return its first argument as an error when applied to anything other then `#null`.
 -}
 null : e -> ValueDecoder e ()
 null = value
