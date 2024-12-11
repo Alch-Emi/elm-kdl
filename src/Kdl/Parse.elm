@@ -395,7 +395,7 @@ parseKeyword =
     |> inContext WithinKeyword
 
 parseStringVal : Parser Context PProblem ValueContents
-parseStringVal = parseString [] |> Parser.map StringVal
+parseStringVal = parseString [';'] |> Parser.map StringVal
 
 parseDigits : (Char -> Bool) -> Parser c PProblem String
 parseDigits isDigitValid =
