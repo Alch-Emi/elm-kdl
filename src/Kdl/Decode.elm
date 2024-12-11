@@ -1,4 +1,4 @@
-module Kdl.Decode exposing (decode, ValueDecoder, NodeDecoder, DocumentDecoder, map, map2, andApply, andRequire, andThen, succeed, rational, float, int, string, bool, null, argument, optionalArgument, arguments, noOtherArguments, property, optionalProperty, properties, noOtherProperties, nodeName, children, noChildren, document, documentF, singleNodeDocument, guardV, guardN, failV, failN, oneOfV)
+module Kdl.Decode exposing (decode, ValueDecoder, NodeDecoder, DocumentDecoder, map, map2, andApply, andRequire, andThen, succeed, rational, float, int, string, bool, null, argument, optionalArgument, arguments, noOtherArguments, property, optionalProperty, properties, noOtherProperties, nodeName, children, noChildren, document, documentF, singleNodeDocument, guardV, guardN, failV, failN, oneOfV, noOtherEntries, multidictDocument, dictDocument, entry, entries, optionalEntry, singleNodeDocumentF)
 
 {-| Tools for building a translator from KDL to your Elm datastructure
 
@@ -120,18 +120,94 @@ These decoders help you get a little bit more information about your nodes.  Not
 
 # Documents & Child Blocks
 
-These decoders help you decode both documents and blocks of children.
+There are several strategies you can use to decode documents and child blocks
+(which are treated as equivalent by this decoder).  This section is broken up
+by strategy.
+
+## Property-List Documents
+
+One of the more common types of documents you'll see has a series of nodes
+which each encode some property.  For example, the block of child nodes for an
+employee record might contain a `name` node, an optional `birthday` node, and a
+several `project` nodes.  Note that this does not fit neatly as a dict-like node
+(from the next section) since there are a fixed number of keys, and each key has
+a special meaning.
+
+In parse this example, you could parse the employee's name with [`entry`]
+(#entry), their birthday with [`optionalEntry`](#optionalEntry), and their
+project with [`entries`](#entries).  This method would be agnostic to the order
+of the properties in the block, but would require exactly one `name` and no more
+more one `birthday`.
+
+    type alias EmployeeData =
+        { name : String
+        , birthday : Maybe Int
+        , projects : List String
+        }
+
+    decodeEmployeeData = succeed EmployeeData
+        |> andApply (entry "no name provided" "employees can only have one name" "name" (argument "name takes one argument" (string "name must be a string")))
+        |> andApply (optionalEntry "employees can only have one birthday" "birthday" (argument "birthday takes one argument" (int "birthday must be a unix timestamp")))
+        |> andApply (entries "project" (argument "projects takes one argument" (string "projects must be strings")))
+        |> andRequire (noOtherEntries "unrecognized property")
+
+This decoder could successfully decode this document:
+
+```
+name bob
+birthday 944937799
+project big-freaking-contraption
+project evil-laser-beam
+```
+
+One thing to note about this parsing strategy is that while most of the
+rest of the parsing strategies simply take arguments and return a complete
+[`Documentdecoder`](#DocumentDecoder), this parsing strategy looks a little
+bit more like the parsing strategy for arguments and values, where smaller unit
+decoders are combined with [`andApply`](#andApply) to form a bigger decoder.
+
+@docs entry
+@docs entries
+@docs optionalEntry
+@docs noOtherEntries
+
+## Dict-Like Documents
+
+A common use of documents is to represent dict-like structures.  In these cases,
+the names of nodes are arbitrary strings which represent keys in a dictionary,
+and the bodies of those nodes are simple types corresponding to the values in
+that dictionary.
+
+Crucially, the keys shouldn't be preset keywords, and the values should all be
+decoded in the same way.
+
+@docs dictDocument
+@docs multidictDocument
+
+## Single-Node Documents
+
+Sometimes your document only has one node, so you don't need much to parse it!
+
+@docs singleNodeDocument
+@docs singleNodeDocumentF
+
+## Order-Signifigant Documents
+
+The most powerful document decoders are these, which preserve the order of
+the nodes which they parse rather than forming them into a more ergonomic
+datastructure.  This means that you can arrange the nodes into your own
+order-aware datastructure, although it forces you to do a little bit more work.
 
 @docs document
 @docs documentF
-@docs singleNodeDocument
 -}
 
 import Kdl.Types exposing (Document, KdlNumber(..), Node(..), SourceRange, Value, ValueContents(..))
-import Kdl.Util as Util exposing (flip, k, maybe, result, uncons, uncurry)
+import Kdl.Util exposing (flip, k, maybe, result, uncons, uncurry)
 
 import BigRational exposing (BigRational)
 import Dict exposing (Dict)
+import List exposing (member)
 import Tuple exposing (pair)
 import BigInt
 import Maybe exposing (withDefault)
@@ -277,6 +353,16 @@ cBoth (Decoder left) (Decoder right) = Decoder (\v ->
         case v of
             Ok r -> right r   |> resultMapItem Ok |> (Result.map << Tuple.mapSecond) Ok
             Err l -> left l |> resultMapItem Err |> (Result.map << Tuple.mapSecond) Err
+    )
+
+{-| ArrowApply for Decoders
+
+https://hackage.haskell.org/package/base-4.19.0.0/docs/Control-Arrow.html#t:ArrowApply
+-}
+app : Decoder (Decoder b e c, b) e c
+app = Decoder (\((Decoder toApply, arg) as input) ->
+        toApply arg
+        |> resultSetCarry input
     )
 
 {-| Delay computation of a decoder for recursive purposes
@@ -738,12 +824,12 @@ children = arr (\(Node n) -> n.children) |> flip comp
 
 Instead of simply ignoring the children of a node, it's often preferable to ensure that the node definitely does not have children, and therefore is less likely to be being used incorrectly.  This function concisely accomplishes that.
 
-Equivalent to `children (emptyDocument <error>)`
+Equivalent to `children (noOtherNodes <error>)`
 
-See also:  [`children`](#children), [`emptyDocument`](#emptyDocument)
+See also:  [`children`](#children), [`noOtherEntries`](#noOtherEntries)
 -}
 noChildren : e -> Decoder Node e ()
-noChildren = emptyDocument >> children
+noChildren = noOtherEntries >> children
 
 -- [ Nodes ] --
 
@@ -809,6 +895,10 @@ documentLoc = arr Tuple.second
 
 {-| Decode a docmunt with an arbitrary number of nodes
 
+This is the most basic, unspecialized type of document decoder.  It simply
+decodes all of the nodes that appear in the document, in order, choosing a
+[`NodeDecoder`](#NodeDecoder) based on the provided lookup table.
+
 For each node to be decoded, its name will be checked against the provided `Dict`.  If a decoder is found there, it will be returned.  Otherwise, the the `ifUnrecognized` error is returned.
 
 It is often helpful to set `fallbackNodeDecoder` to [`fail`](#fail) with some error.
@@ -834,29 +924,172 @@ documentF f =
     nodes
     |> comp (multiple (oneOfNodeF f))
 
-{-| Decode a document with exactly one node
+{-| Decode a document with exactly one node with a fixed name
 
-The first to arguments are error values to return if the document is empty (contains no nodes), if there is an extra node that's unaccounted for, and if the name of the node in the document isn't the expected one.
+Best used when your document only has one node, and that node should always have the same name.  If you have multiple types of nodes that could appear, you might prefer to use [`singleNodeDocumentF`](#singleNodeDocumentF).
+
+The first three arguments are error values to return if the document is empty (contains no nodes), if there is an extra node that's unaccounted for, and if the name of the node in the document isn't the expected one.
 
 The next two arguments specify the expected name of the node and the [`NodeDecoder`](#NodeDecoder) that should be used for it.
 -}
 singleNodeDocument : e -> e -> e -> String -> Decoder Node e t -> Decoder Document e t
-singleNodeDocument ifAbsent ifTooMany ifUnrecognized expectedName decodeNode =
+singleNodeDocument ifAbsent ifTooMany ifUnrecognized expectedName decodeNode = singleNodeDocumentF ifAbsent ifTooMany (\n -> if n == expectedName then decodeNode else failN ifUnrecognized)
+
+{-| Decode a document with exactly one node, but where there might be several possible types of nodes.
+
+Rather than only parse a single type of node (with a fixed name), this function lets you conditionally accept or deny multiple types of nodes based on their name.
+
+The first two arguments are errors to return if the node is absent, or if there is more than one node present.  Then the third and final argument is a function which decides what [`NodeDecoder`](#NodeDecoder) to use for a given node name.
+
+Keep in mind that you can return [`failN`](#failN) to reject a node that has a name you don't support.
+
+See also:
+- [`singleNodeDocument`](#singleNodeDocument), a version of this function for a fixed node name
+- [`documentF`](#documentF), a version of this which can accept multiple nodes, not just one.
+-}
+singleNodeDocumentF : e -> e -> (String -> Decoder Node e t) -> Decoder Document e t
+singleNodeDocumentF ifAbsent ifTooMany getDecoder =
     nodeName
-    |> guardN ifUnrecognized ((==) expectedName)
-    |> map (k identity)
-    |> andApply decodeNode
+    |> andThen getDecoder
     |>
         (
             fanout takeFirstChild documentLoc
             |> comp (just ifAbsent)
             |> flip comp
         )
-    |> andRequire (emptyDocument ifTooMany)
+    |> andRequire (noOtherEntries ifTooMany)
 
-{-| Only succeed when a document is completely empty
+{-| Only succeed when a document has no nodes left
+
+Any nodes proccessed by [`entry`](#entry), [`optionalEntry`](#optionalEntry), and [`entries`](#entries) are omitted from the count.
 
 The first argument is the error to produce if any nodes are present at all.
+
+This can also be used to decode an empty document.
 -}
-emptyDocument : e -> Decoder Document e ()
-emptyDocument = failN >> k >> documentF >> map (k ())
+noOtherEntries : e -> Decoder Document e ()
+noOtherEntries = failN >> k >> documentF >> map (k ())
+
+{-| Utility method from creating a multidict from a list of key-value pairs
+-}
+multidictFromList : List (comparable, t) -> Dict comparable (List t)
+multidictFromList = List.foldr (\(key, v) -> Dict.update key (withDefault [] >> (::) v >> Just)) Dict.empty
+
+{-| Decode a dict-like document
+
+For each node in the document, that node is treated like an entry in a
+dictionary.  The name of the node is seen as the key, and the value is what
+that node decodes to.  Consider this subsection of the `cargo.kdl` official
+KDL example:
+
+```kdl
+dependencies {
+    nom "6.0.1"
+    thiserror "1.0.22"
+}
+```
+
+We could parse this like so:
+
+    decodeDependencyVersion : Decoder Node String String
+    decodeDependencyVersion =
+        argument "missing version" (string "version should be a string")
+        |> andRequire (noOtherArguments "a dependency should only have one version")
+        |> andRequire (noOtherProperties "dependency properties aren't supported")
+        |> andRequire (noChildren "dependencies can't have children")
+
+    decodeDependencies : Decoder Document String (Dict String String)
+    decodeDependencies =
+        dictDocument "dependencies can only be listed once" decodeDependencyVersion 
+        |> children
+        |> andRequire (noOtherArguments "specify dependencies in the child block")
+        |> andRequire (noOtherProperties "specify dependencies in the child block")
+        |> singleNodeDocument "missing dependency block" "multiple dependency blocks" "unrecognized node" "dependencies"
+
+Notice that this will return `"dependencies can only be listed once"` if someone
+tries to specify a dependency twice.
+-}
+dictDocument : e -> NodeDecoder e t -> DocumentDecoder e (Dict String t)
+dictDocument ifDuplicate decodeNode =
+    let
+        aux : List String -> Decoder (List Node) e (List (String, t))
+        aux forbiddenNames = 
+            let
+                decodeOne : NodeDecoder e (String, t)
+                decodeOne =
+                    (nodeName |> guardN ifDuplicate (not << flip member forbiddenNames))
+                    |> map pair
+                    |> andApply decodeNode
+                decodeMany : Decoder (Node, List Node) e (List (String, t))
+                decodeMany =
+                    both
+                        (
+                            decodeOne
+                            |> map
+                                (\((usedName, _) as firstNode) ->
+                                    aux (usedName :: forbiddenNames)
+                                    |> map ((::) firstNode)
+                                )
+                        )
+                        (arr identity)
+                    |> comp app
+            in
+                arr (uncons >> Result.fromMaybe ())
+                |> comp (cBoth (arr <| k []) decodeMany)
+                |> map (result identity identity)
+    in nodes |> comp (aux []) |> map Dict.fromList
+
+{-| Decode a document as if it were a multidict (a dict that can have multiple values associated with a single key)
+
+This behaves much like [`dictDocument`](#dictDocument), but rather than raise an error when there are multiple nodes with one key, 
+-}
+multidictDocument : NodeDecoder e t -> DocumentDecoder e (Dict String (List t))
+multidictDocument =
+    map2 pair nodeName
+    >> k
+    >> documentF
+    >> map multidictFromList
+
+takeEntries : String -> DocumentDecoder e Document
+takeEntries desiredName = Decoder (\(childNodes, originalLocation) ->
+        let
+            matchesName (Node n) = n.name == desiredName
+            (matchingNodes, remainingNodes) = List.partition matchesName childNodes
+        in Ok ((matchingNodes, originalLocation), (remainingNodes, originalLocation))
+    )
+
+{-| Decode one entry which should occur exactly once
+
+Takes four arguments:
+ - An error to return when the entry is absent
+ - An error to return when the entry occurs more than once
+ - The name of the entry (aka the name of the node to look for)
+ - A decoder for the node once it's found
+-}
+entry : e -> e -> String -> NodeDecoder e t -> DocumentDecoder e t
+entry ifAbsent ifTooMany desiredName decodeNode = comp (singleNodeDocumentF ifAbsent ifTooMany (k decodeNode)) (takeEntries desiredName)
+
+{-| Decode an entry which may occur any number of times (including zero)
+
+Takes two arguments:
+ - The name of the entries (aka the name of the nodes to look for)
+ - A decoder for the node once it's found
+-}
+entries : String -> NodeDecoder e t -> DocumentDecoder e (List t)
+entries desiredName decodeNode = comp (documentF (k decodeNode)) (takeEntries desiredName)
+
+{-| Decode an entry which can occur zero or one times
+
+Takes two arguments:
+ - An error to return when the entry occurs more than once
+ - The name of the entry (aka the name of the node to look for)
+ - A decoder for the node once it's found
+-}
+optionalEntry : e -> String -> NodeDecoder e t -> DocumentDecoder e (Maybe t)
+optionalEntry ifTooMany desiredName decodeNode =
+    let
+        parseDoc =
+            takeFirstChild
+            |> comp (optional decodeNode)
+            |> andRequire (noOtherEntries ifTooMany)
+    in comp parseDoc (takeEntries desiredName)
