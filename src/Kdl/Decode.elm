@@ -1,4 +1,4 @@
-module Kdl.Decode exposing (decode, ValueDecoder, NodeDecoder, DocumentDecoder, map, map2, andApply, andRequire, andThen, succeed, rational, float, int, string, bool, null, argument, optionalArgument, arguments, noOtherArguments, property, optionalProperty, properties, noOtherProperties, nodeName, children, noChildren, document, documentF, singleNodeDocument, failV, failN)
+module Kdl.Decode exposing (decode, ValueDecoder, NodeDecoder, DocumentDecoder, map, map2, andApply, andRequire, andThen, succeed, rational, float, int, string, bool, null, argument, optionalArgument, arguments, noOtherArguments, property, optionalProperty, properties, noOtherProperties, nodeName, children, noChildren, document, documentF, singleNodeDocument, failV, failN, oneOfV)
 
 {-| Tools for building a translator from KDL to your Elm datastructure
 
@@ -78,6 +78,7 @@ Values are the most basic building block of KDL, and can be used to construct de
 @docs bool
 @docs null
 @docs failV
+@docs oneOfV
 
 # Arguments
 
@@ -474,6 +475,50 @@ null = value
 -}
 failV : e -> ValueDecoder e never
 failV e = Decoder (.location >> pair e >> Err)
+
+{-| Try several different decoders to see if any work
+
+Sometimes, you'll need to decode a value which could have one of several
+possible types.  For example, say you have a `date` node which can be followed
+by either an integer (which should be interpretted as a UNIX timestamp) or
+a string (which should be interpretted as a string).  For example, say you have
+a `date` node which can be followed by either an integer (which should be
+interpretted as a UNIX timestamp) or a string (which should be interpretted
+as a string).  In this case, you can't just decode that value using
+[`string`](#string) or [`int`](#int) — you'll need to try both to see which one
+works. Here's how you can do that with `oneOfV`:
+
+    type MyDate
+        = Datestring String
+        | UnixTime Int
+
+    decodeDate : Decoder Document String MyDate
+    decodeDate =
+        argument "date takes one argument"
+            (
+                oneOfV "dates must be either strings or ints!"
+                    [ string () |> map Datestring
+                    , int () |> map UnixTime
+                    ]
+            )
+        |> andRequire (noOtherArguments "too many arguments!")
+        |> singleNodeDocument "missing node" "too many nodes" "unrecognized node" "date"
+
+    (parse "date 1733882937" |> Result.map (decode decodeDate)) == Ok (Ok (UnixTime 1733882937))
+
+`oneOfV` takes two arguments.  The first is an error to return if all other
+errors fail.  The second is a list of decoders that should be tried.  Note that
+all errors from the internal parsers are discarded if those parsers fail.
+-}
+oneOfV : e -> List (ValueDecoder ignored t) -> ValueDecoder e t
+oneOfV ifAllFail possibleDecoders =
+    case possibleDecoders of
+        [] -> failV ifAllFail
+        (Decoder h) :: t -> Decoder (\i ->
+                case h i of
+                    Err _ -> run (oneOfV ifAllFail t) i
+                    Ok yay -> Ok yay
+            )
 
 -- [ Node Helpers ] --
 
