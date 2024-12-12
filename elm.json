@@ -2,7 +2,7 @@
     "type": "package",
     "name": "alch-emi/kdl",
     "summary": "Parser & pretty printer for the KDL document language",
-    "license": "MIT",
+    "license": "BSD-3-Clause",
     "version": "1.0.0",
     "exposed-modules": [
         "Kdl",
