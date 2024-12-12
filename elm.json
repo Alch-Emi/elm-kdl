@@ -1,6 +1,6 @@
 {
     "type": "package",
-    "name": "alch-emi/kdl",
+    "name": "Alch-Emi/elm-kdl",
     "summary": "Parser & pretty printer for the KDL document language",
     "license": "BSD-3-Clause",
     "version": "1.0.0",
