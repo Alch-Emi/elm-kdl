@@ -395,7 +395,7 @@ This can be very helpful when defining decoders for documents, properties, and a
     mkMyWeirdDatatype : Int -> String -> Int -> MyWeirdDatatype
     mkMyWeirdDatatype x str y = MyWeirdDatatype str (x - y)
 
-    decodeMyWeirdData : Decoder Document String MyWeirdDatatype
+    decodeMyWeirdData : DocumentDecoder String MyWeirdDatatype
     decodeMyWeirdData =
         succeed mkMyWeirdDatatype
             |> andApply (argument "needs 3 args" (int "expected an int"))
@@ -608,7 +608,7 @@ works. Here's how you can do that with `oneOfV`:
         = Datestring String
         | UnixTime Int
 
-    decodeDate : Decoder Document String MyDate
+    decodeDate : DocumentDecoder String MyDate
     decodeDate =
         argument "date takes one argument"
             (
@@ -640,7 +640,7 @@ oneOfV ifAllFail possibleDecoders =
 
 {-| Decode a node, taking its first argument if it exists (and removing it from the carry)
 -}
-takeFirstArg : Decoder Node e (Maybe Value)
+takeFirstArg : NodeDecoder e (Maybe Value)
 takeFirstArg = fromFuncWithCarry (\(Node ({args} as n)) ->
         case args of
             h :: t -> (Just h, Node {n | args = t})
@@ -649,7 +649,7 @@ takeFirstArg = fromFuncWithCarry (\(Node ({args} as n)) ->
 
 {-| Decode a node, taking its first argument if it exists (and removing it from the carry)
 -}
-takeProp : String -> Decoder Node e (Maybe Value)
+takeProp : String -> NodeDecoder e (Maybe Value)
 takeProp propName = fromFuncWithCarry (\(Node ({props} as n)) ->
         case Dict.get propName props of
             (Just _) as o -> (o, Node {n | props = Dict.remove propName props})
@@ -708,7 +708,7 @@ If you'd rather the argument be completely optional, see [`optionalArgument`](#o
 
 This function mirrors the behavior of [`property`](#property), but for arguments rather than properties.
 -}
-argument : e -> Decoder Value e t -> Decoder Node e t
+argument : e -> ValueDecoder e t -> NodeDecoder e t
 argument = just >> flip comp (fanout takeFirstArg nodeLocation) >> flip comp
 
 {-| Add an optional argument to a node
@@ -719,7 +719,7 @@ Please read the documentation for [`argument`](#argument) for important details 
 
 This mirrors the behavior of [`optionalProperty`](#optionalProperty) for arguments rather than properties.
 -}
-optionalArgument : Decoder Value e t -> Decoder Node e (Maybe t)
+optionalArgument : ValueDecoder e t -> NodeDecoder e (Maybe t)
 optionalArgument decodeVal =
     takeFirstArg
     |> comp (optional decodeVal)
@@ -730,7 +730,7 @@ Requires that you provide a decoder which will be used on all arguments which ha
 
 This mirrors the behavior of [`properties`](#properties) but for arguments rather than properties.
 -}
-arguments : Decoder Value e t -> Decoder Node e (List t)
+arguments : ValueDecoder e t -> NodeDecoder e (List t)
 arguments = multiple >> flip comp (arr (\(Node {args}) -> args))
 
 {-| Automatically fails if there are any arguments which have not yet been decoded
@@ -743,7 +743,7 @@ This mirrors the behavior of [`noOtherProperties`](#noOtherProperties) but for a
 
 [`arguments`]: #arguments
 -}
-noOtherArguments : e -> Decoder Node e ()
+noOtherArguments : e -> NodeDecoder e ()
 noOtherArguments = failV >> optionalArgument >> map (k ())
 
 -- [ Properties ] --
@@ -817,7 +817,7 @@ By default, any child nodes are simply ignored without fanfare, but you can spec
 
 See also:  [`document`](#document)
 -}
-children : Decoder Document e t -> Decoder Node e t
+children : DocumentDecoder e t -> NodeDecoder e t
 children = arr (\(Node n) -> n.children) |> flip comp
 
 {-| Assert that a node does not have any children
@@ -828,7 +828,7 @@ Equivalent to `children (noOtherNodes <error>)`
 
 See also:  [`children`](#children), [`noOtherEntries`](#noOtherEntries)
 -}
-noChildren : e -> Decoder Node e ()
+noChildren : e -> NodeDecoder e ()
 noChildren = noOtherEntries >> children
 
 -- [ Nodes ] --
@@ -851,7 +851,7 @@ nodeLocation = Decoder
         Ok (location, inputNode)
     )
 
-oneOfNodeF : (String -> Decoder Node e t) -> Decoder Node e t
+oneOfNodeF : (String -> NodeDecoder e t) -> NodeDecoder e t
 oneOfNodeF lookupNode = andThen lookupNode nodeName
 
 {-| Require that a condition be true of the value returned by a [`NodeDecoder`](#NodeDecoder)
@@ -878,19 +878,19 @@ failN e = Decoder (\(Node {location}) -> Err (e, location))
 
 -- [ Document ] --
 
-nodes : Decoder Document never (List Node)
+nodes : DocumentDecoder never (List Node)
 nodes = arr Tuple.first
 
 {-| Take without replace the first node of a document
 -}
-takeFirstChild : Decoder Document never (Maybe Node)
+takeFirstChild : DocumentDecoder never (Maybe Node)
 takeFirstChild = fromFuncWithCarry (\((l, p) as d) ->
         case l of
             [] -> (Nothing, d)
             h :: t -> (Just h, (t, p))
     )
 
-documentLoc : Decoder Document never SourceRange
+documentLoc : DocumentDecoder never SourceRange
 documentLoc = arr Tuple.second
 
 {-| Decode a docmunt with an arbitrary number of nodes
@@ -905,7 +905,7 @@ It is often helpful to set `fallbackNodeDecoder` to [`fail`](#fail) with some er
 
 For a more powerful version of this, see [`documentF`](#documentF).
 -}
-document : e -> Dict String (Decoder Node e t) -> Decoder Document e (List t)
+document : e -> Dict String (NodeDecoder e t) -> DocumentDecoder e (List t)
 document ifUnrecognized namedNodeDecoders =
     documentF (flip Dict.get namedNodeDecoders >> Maybe.withDefault (failN ifUnrecognized))
 
@@ -919,7 +919,7 @@ for choosing a subsequent decoder.
 
 [`document`]: #document
 -}
-documentF : (String -> Decoder Node e t) -> Decoder Document e (List t)
+documentF : (String -> NodeDecoder e t) -> DocumentDecoder e (List t)
 documentF f =
     nodes
     |> comp (multiple (oneOfNodeF f))
@@ -932,7 +932,7 @@ The first three arguments are error values to return if the document is empty (c
 
 The next two arguments specify the expected name of the node and the [`NodeDecoder`](#NodeDecoder) that should be used for it.
 -}
-singleNodeDocument : e -> e -> e -> String -> Decoder Node e t -> Decoder Document e t
+singleNodeDocument : e -> e -> e -> String -> NodeDecoder e t -> DocumentDecoder e t
 singleNodeDocument ifAbsent ifTooMany ifUnrecognized expectedName decodeNode = singleNodeDocumentF ifAbsent ifTooMany (\n -> if n == expectedName then decodeNode else failN ifUnrecognized)
 
 {-| Decode a document with exactly one node, but where there might be several possible types of nodes.
@@ -947,7 +947,7 @@ See also:
 - [`singleNodeDocument`](#singleNodeDocument), a version of this function for a fixed node name
 - [`documentF`](#documentF), a version of this which can accept multiple nodes, not just one.
 -}
-singleNodeDocumentF : e -> e -> (String -> Decoder Node e t) -> Decoder Document e t
+singleNodeDocumentF : e -> e -> (String -> NodeDecoder e t) -> DocumentDecoder e t
 singleNodeDocumentF ifAbsent ifTooMany getDecoder =
     nodeName
     |> andThen getDecoder
@@ -967,7 +967,7 @@ The first argument is the error to produce if any nodes are present at all.
 
 This can also be used to decode an empty document.
 -}
-noOtherEntries : e -> Decoder Document e ()
+noOtherEntries : e -> DocumentDecoder e ()
 noOtherEntries = failN >> k >> documentF >> map (k ())
 
 {-| Utility method from creating a multidict from a list of key-value pairs
@@ -991,14 +991,14 @@ dependencies {
 
 We could parse this like so:
 
-    decodeDependencyVersion : Decoder Node String String
+    decodeDependencyVersion : NodeDecoder String String
     decodeDependencyVersion =
         argument "missing version" (string "version should be a string")
         |> andRequire (noOtherArguments "a dependency should only have one version")
         |> andRequire (noOtherProperties "dependency properties aren't supported")
         |> andRequire (noChildren "dependencies can't have children")
 
-    decodeDependencies : Decoder Document String (Dict String String)
+    decodeDependencies : DocumentDecoder String (Dict String String)
     decodeDependencies =
         dictDocument "dependencies can only be listed once" decodeDependencyVersion 
         |> children
