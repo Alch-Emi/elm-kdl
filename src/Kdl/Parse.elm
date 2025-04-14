@@ -736,14 +736,14 @@ parseNode =
                     |. star k () nodespace
                     |> andThen (\(typLoc, typ) ->
                         oneOf
-                            [ parseString [';', '/', '}']
+                            [ parseString [';', '/', '}', '{']
                             , commit identity |. end PInvalidIdentifier |= problem (PLonelyType typLoc)
                             ]
                         |> Parser.map (Tuple.pair (Just typ))
                     )
                 , succeed (Tuple.pair Nothing)
                     |. star k () nodespace
-                    |= parseString [';', '/', '}']
+                    |= parseString [';', '/', '}', '{']
                 ]
             |= starL (
                 succeed identity
