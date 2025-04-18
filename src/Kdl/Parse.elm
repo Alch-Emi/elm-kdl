@@ -829,9 +829,9 @@ parseVersion =
         |. Parser.token (Token "/-" (PExpecting "version comment start"))
         |. chompWhile unicodeSpace
         |. Parser.token (Token "kdl-version" (PExpecting "version comment node name"))
+        |. chompIf unicodeSpace (PExpecting "version comment space")
         |> backtrackable
     )
-    |. chompIf unicodeSpace (PExpecting "version comment space")
     |= parseValue
     |> andThen (\version ->
         if version.contents == NumberVal (Rational (BigRational.fromInt 2))
