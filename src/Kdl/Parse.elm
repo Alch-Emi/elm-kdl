@@ -815,10 +815,29 @@ parseDocument =
         mkDocument start nodes end = (nodes, (start, end))
     in
         succeed mkDocument
+        |. parseVersion
         |= getPosition
         |= parseNodes
         |= getPosition
         |. end PInvalidIdentifier
+
+parseVersion : Parser Context PProblem ()
+parseVersion =
+    (
+        succeed identity
+        |. Parser.token (Token "/-" (PExpecting "version comment start"))
+        |. chompWhile unicodeSpace
+        |. Parser.token (Token "kdl-version" (PExpecting "version comment node name"))
+        |> backtrackable
+    )
+    |. chompIf unicodeSpace (PExpecting "version comment space")
+    |= parseValue
+    |> andThen (\version ->
+        if version.contents == NumberVal (Rational (BigRational.fromInt 2))
+            then succeed ()
+            else problem (PPrelocated <| UnsupportedVersion {documentVersion = version.location})
+    )
+    |> optional ()
 
 findInvalidChars : String -> Maybe Position
 findInvalidChars =
@@ -871,6 +890,7 @@ In case you are interested in what each variant means, here's the full breakdown
 - **LonelyType**: A type was written, but not followed by anything.  Describes whether the type belonged to a value or a node (`ofValue`), the location of the type (`typeLoc`), the character which the parser got stuck on (`stuckAt`).
 - **TooManyChildBlocks**: A node has more than one child block.  Describes whether the location of the node (`nodeLoc`), and the locations of the first and second uncommented child blocks (`firstBlock`/`secondBlock`).
 - **OldStyleRawString**: The user tried to use an old style raw string (i.e. `r##"` rather than `##"`).  Describes whether the location of the opening prefix (`prefixLoc`).
+- **UnsupportedVersion**: The version comment at the top of the document claims that the document is written using a version of KDL that this parser doesn't support.  Contains the source location of the reported version (`documentVersion`).
 
 [`getErrorMessage()`]: #getErrorMessage
 -}
@@ -906,6 +926,7 @@ type Problem
     | LonelyType {ofValue: Bool, typeLoc: SourceRange, stuckAt: Position}
     | TooManyChildBlocks ({ nodeLoc : SourceRange, firstBlock : SourceRange, secondBlock : SourceRange })
     | OldStyleRawString { prefixLoc: SourceRange }
+    | UnsupportedVersion {documentVersion: SourceRange}
 
 type alias DefaultContextFrame = {row: Int, col: Int, context: Context}
 type MyContextFrame = ContextFrame Context Position
@@ -1446,6 +1467,13 @@ getErrorMessage source p = case p of
             , PlainText "As of KDL 2.0, you don't need the 'r' before the pound signs (#) when writing raw strings anymore.  That means you could just write this raw string like this:"
             , LineExerpt <| editThenExerpt source replaceWith prefixLoc
             ]
+    UnsupportedVersion {documentVersion} ->
+        [ PlainText "It looks like this KDL document was written in a version of KDL that this program can't support"
+        , LineExerpt <| exerptCode source documentVersion
+        , PlainText "This program only supports KDL version 2, but it seems like this document was written using KDL version "
+        , PlainText <| getTextUnderRange documentVersion source
+        , PlainText ".  Consider migrating the document to KDL version 2, or checking messaging the developer of the KDL parser this program is using to request support for a newer version."
+        ]
 
 {-| Strip most formatting from a [`Message`][] and render it to a string
 
