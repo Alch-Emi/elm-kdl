@@ -701,7 +701,7 @@ nodespace = oneOf
 linespace : Parser Context PProblem ()
 linespace = oneOf
     [ newline
-    , ws
+    , nodespace
     , parseLineComment
     ]
 
