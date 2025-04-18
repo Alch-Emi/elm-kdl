@@ -18,7 +18,7 @@ module Kdl.Parse exposing (parse, Problem(..), Message, MessageComponent(..), ge
 -}
 
 import Kdl.Types exposing (Document, KdlNumber(..), Node(..), Value, ValueContents(..), Position, SourceRange)
-import Kdl.Shared exposing (bom, checkForIllegalBareStrings, identifierCharacter, identifyKeyword, initialCharacter, isAnyWhitespace, legalCharacter, nameWhitespace, posPlus, unicodeNewline, unicodeScalarValue, unicodeSpace)
+import Kdl.Shared exposing (bom, checkForIllegalBareStrings, identifierCharacter, identifyKeyword, initialCharacter, isAnyWhitespace, legalCharacter, nameWhitespace, posPlus, unicodeNewline, unicodeScalarValueByCodepoint, unicodeSpace)
 import Kdl.Util exposing (flip, k, maybe, orf, parseRadix, result, toHex, traverseListResult, triple, unlines)
 
 import BigInt exposing (BigInt)
@@ -179,7 +179,7 @@ parseEscapeCode c = case c of
                                     codepoint = BigInt.toString n |> String.toInt |> withDefault 0
                                     char = Char.fromCode codepoint
                                     string = String.fromChar char
-                                in if unicodeScalarValue char
+                                in if unicodeScalarValueByCodepoint codepoint
                                     then succeed string
                                     else problem PIllegalUnicodeCodepoint
                             Nothing -> problem PUnicodeEscapeInvalidCharacters

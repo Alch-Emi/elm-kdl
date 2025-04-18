@@ -1,4 +1,4 @@
-module Kdl.Shared exposing (bom, checkForIllegalBareStrings, identifierCharacter, identifyKeyword, illegalCharacter, initialCharacter, isAnyWhitespace, nameWhitespace, posPlus, unicodeNewline, unicodeScalarValue, unicodeSpace, legalCharacter)
+module Kdl.Shared exposing (bom, checkForIllegalBareStrings, identifierCharacter, identifyKeyword, illegalCharacter, initialCharacter, isAnyWhitespace, nameWhitespace, posPlus, unicodeNewline, unicodeScalarValue, unicodeScalarValueByCodepoint, unicodeSpace, legalCharacter)
 
 import Kdl.Types exposing (KdlNumber(..), Position, ValueContents(..))
 import Kdl.Util exposing (andf, orf, flip, sequenceListF, toHex, withinRange)
@@ -41,12 +41,12 @@ unicodeNewline = Char.toCode >> flip member
     ]
 
 unicodeScalarValue : Char -> Bool
-unicodeScalarValue c =
-    let
-        cp = Char.toCode c
-    in
-        (0 <= cp && cp <= 0xD7FF)
-        ||  (0xE000 <= cp && cp <= 0x10FFFF)
+unicodeScalarValue = Char.toCode >> unicodeScalarValueByCodepoint
+
+unicodeScalarValueByCodepoint : Int -> Bool
+unicodeScalarValueByCodepoint cp =
+    (0 <= cp && cp <= 0xD7FF)
+    ||  (0xE000 <= cp && cp <= 0x10FFFF)
 
 isAnyWhitespace : Char -> Bool
 isAnyWhitespace = orf unicodeSpace unicodeNewline
