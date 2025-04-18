@@ -31,6 +31,7 @@ import Maybe exposing (withDefault)
 import Parser.Advanced as Parser exposing (DeadEnd, Parser, Nestable(..), Token(..), (|.), (|=), andThen, backtrackable, chompIf, chompUntil, chompWhile, commit, end, getChompedString, getOffset, getSource, getPosition, inContext, lazy,mapChompedString, problem, oneOf, succeed, symbol, variable)
 import String
 import Set
+import Tuple
 
 type PProblem
     = PExpecting String
@@ -220,6 +221,32 @@ parseQuotedStringSegment =
         , parseEscapeSequence
         ]
 
+parseMultilineStringInnards : Parser Context PProblem (List (List StrLexeme))
+parseMultilineStringInnards =
+    let
+        parseFewQuotes =
+            succeed (mkStrLexeme STNormal)
+                |= getPosition
+                |= (
+                    oneOf
+                        [ Parser.token (Token "\"\"" (PExpecting "double quote in multiline"))
+                        , Parser.token (Token "\"" (PExpecting "single quote in multiline"))
+                        ]
+                    |> getChompedString
+                )
+                |= getPosition
+                |. lookAhead1 False (PExpecting "can't use few-quotes interpretation as this is part of a triple quote") ((/=) '"')
+                |> backtrackable
+        parseMultilineStringSegment =
+            oneOf
+                [ parseQuotedStringSegment
+                , parseFewQuotes
+                ]
+        parseLine = starL parseMultilineStringSegment
+    in succeed (::)
+        |= parseLine
+        |= starL (succeed identity |. newline |= parseLine)
+
 processWhitespaceEscapes : List (List StrLexeme) -> List (List StrLexeme)
 processWhitespaceEscapes = (List.map << List.filter) (\l -> case l of
         StrLexeme STEscaped _ "" -> False
@@ -236,7 +263,7 @@ processMultilineString : List (List StrLexeme) -> Result (SourceRange -> Problem
 processMultilineString lines =
     case lines of
         [] -> Ok []
-        [singleLine] -> Ok [singleLine]
+        [_] -> Err (\strLoc -> MultilineStringWithOneLine {strLoc=strLoc})
         [] :: firstLine :: otherLines ->
             let
                 lastLine =
@@ -305,16 +332,8 @@ lexemeToString l = case l of
 lexemesToString : List (List StrLexeme) -> String
 lexemesToString = List.map (List.map lexemeToString >> String.concat) >> unlines
 
-parseQuotedStringInnards : Parser Context PProblem (List (List StrLexeme))
-parseQuotedStringInnards =
-    let
-        parseLine = starL parseQuotedStringSegment
-    in succeed (::)
-        |= parseLine
-        |= starL (succeed identity |. newline |= parseLine)
-
-parseQuotedString : Parser Context PProblem String
-parseQuotedString =
+parseMultilineString : Parser Context PProblem String
+parseMultilineString =
     let
         f : Position -> List (List StrLexeme) -> Position -> Parser Context PProblem String
         f openPos contents closePos =
@@ -327,12 +346,19 @@ parseQuotedString =
     in
         succeed f
         |= getPosition
-        |. symbol (Token "\"" <| PExpecting "opening quote")
-        |= parseQuotedStringInnards
-        |. symbol (Token "\"" PUnclosedString)
+        |. symbol (Token "\"\"\"" <| PExpecting "opening triple quote")
+        |= parseMultilineStringInnards
+        |. symbol (Token "\"\"\"" PUnclosedString)
         |= getPosition
         |> Parser.andThen identity
         |> inContext WithinQuotedString
+
+parseQuotedString : Parser Context PProblem String
+parseQuotedString = succeed (List.map lexemeToString >> String.concat)
+    |. symbol (Token "\"" <| PExpecting "opening quote")
+    |= starL parseQuotedStringSegment
+    |. symbol (Token "\"" PUnclosedString)
+    |> inContext WithinQuotedString
 
 parseRawString : Parser Context PProblem String
 parseRawString =
@@ -344,10 +370,16 @@ parseRawString =
                 endCol = startCol + String.length line
             in if startCol == endCol then [] else [StrLexeme STNormal ((currentRow, startCol), (currentRow, endCol)) line]
     in
-        plus k () (chompIf ((==) '#') (PExpecting "raw string"))
-        |. symbol (Token "\"" <| PMalformedRawStringOpening)
-        |> getChompedString
-        |> andThen (\openingToken ->
+        succeed identity
+        |. plus k () (chompIf ((==) '#') (PExpecting "raw string"))
+        |= oneOf
+            [ succeed True
+              |. symbol (Token "\"\"\"" <| PMalformedRawStringOpening)
+            , succeed False
+              |. symbol (Token "\"" <| PMalformedRawStringOpening)
+            ]
+        |> mapChompedString Tuple.pair
+        |> andThen (\(openingToken, isMultiline) ->
             let
                 closeToken = Token (String.reverse openingToken) PUnclosedString
             in
@@ -360,9 +392,17 @@ parseRawString =
                     |> List.indexedMap (wrapLineInLexeme contentsStart)
                     |> Tuple.pair (contentsStart, posPlus -(String.length openingToken + 1) contentsEnd)
                 )
-                |> Parser.andThen (\(contents, strLexemes) ->
-                    processMultilineString strLexemes
-                    |> result (flip (<|) contents >> PPrelocated >> problem) succeed
+                |> (
+                    if isMultiline
+                        then Parser.andThen (\(contents, strLexemes) ->
+                            processMultilineString strLexemes
+                            |> result (flip (<|) contents >> PPrelocated >> problem) succeed
+                            )
+                        else Parser.andThen (\(contents, strLexemes) ->
+                                if List.length strLexemes > 1
+                                    then problem (PPrelocated (SingleLineStringWithMultipleLines {strLoc = contents}))
+                                    else succeed strLexemes
+                            )
                 )
                 |> Parser.map lexemesToString
                 |> flip (|.) (symbol closeToken)
@@ -560,6 +600,7 @@ parseString : List Char -> Parser Context PProblem String
 parseString possibleFollowingCharacters =
     oneOf
         [ parseRawString
+        , parseMultilineString
         , parseBareString possibleFollowingCharacters
         , parseQuotedString
         ]
@@ -862,6 +903,8 @@ type Problem
     | MultilineStringTrailingCharacters {strLoc: SourceRange, trailingChars: SourceRange}
     | MultilineStringLineLacksPrefix {strLoc: SourceRange, violatingChars: SourceRange}
     | MultilineStringMismatchedPrefixSpace {strLoc: SourceRange, offendingChar: Position, expected: Char, got: Char}
+    | MultilineStringWithOneLine {strLoc: SourceRange}
+    | SingleLineStringWithMultipleLines {strLoc: SourceRange}
     | LonelyType {ofValue: Bool, typeLoc: SourceRange, stuckAt: Position}
     | TooManyChildBlocks ({ nodeLoc : SourceRange, firstBlock : SourceRange, secondBlock : SourceRange })
     | OldStyleRawString { prefixLoc: SourceRange }
@@ -1100,7 +1143,7 @@ getTextUnderRange ((startRow, startCol), (endRow, endCol)) source =
 multilineStringGuidance : Message
 multilineStringGuidance =
     [ PlainText "The multi-line string syntax can take a little bit of getting used to, but if you want to read up on it, you can check out the official specification here:\n"
-    , Link "https://github.com/kdl-org/kdl/blob/76a1de5/SPEC.md#multi-line-strings"
+    , Link "https://github.com/kdl-org/kdl/blob/84911fe/draft-marchan-kdl2.md#multi-line-string"
     ]
 
 {-| Converts a [`Problem`](Kdl.Parse#Problem) into a user-friendly message.
@@ -1331,6 +1374,20 @@ getErrorMessage source p = case p of
         [ PlainText "I was trying to parse a multi-line string, but it looks like you've got some trailing characters on the last line:"
         , LineExerpt <| exerptCode source trailingChars
         , PlainText "To declare a multi-line string, make sure you leave the last line (the one with the closing double-quote) as just whitespace.  I use that whitespace to help calibrate how much whitespace to trim off of the prior lines, so there can't be any non-whitespace characters there or I'll get confused.\n\n"
+        ] ++ multilineStringGuidance
+    MultilineStringWithOneLine {strLoc}         ->
+        [ PlainText "It seems like you are attempting to use a multiline string here:"
+        , LineExerpt <| exerptCode source strLoc
+        , PlainText "But I only see one line!  Maybe you meant to use a single-line \"plain string\" or #\"raw string\"?\n\n"
+        ] ++ multilineStringGuidance
+    SingleLineStringWithMultipleLines {strLoc}         ->
+        [ PlainText "I saw a string that starts here:"
+        , LineExerpt <| pointAtCode source (Tuple.first strLoc |> posPlus (-1))
+        , PlainText "And ends later on in the file, down here:"
+        , LineExerpt <| pointAtCode source (Tuple.second strLoc |> posPlus 1)
+        , PlainText "This string stretches over multiple lines, but because it's deliniated with single quotes (\") rather than triple quotes (\"\"\"), I have to try to interpret it as a single-line string.\n\n"
+        , PlainText "If you intended for this string NOT to have newlines in it, maybe try using a whitespace escape by ending each line with a backslash (\\).  This will ignore any white space that comes after the backslash until the next non-whitespace character, which is particularly helpful when you want to break up a long string onto multiple lines without having those newlines actually appear in the string.\n\n" -- like right now
+        , PlainText "If you DID want the newlines to actually appear in the string, try either using a multi-line string with triple-quotes (\"\"\") instead of single quotes, OR use an escaped newline (\\n) instead of an actual newline.  "
         ] ++ multilineStringGuidance
     MultilineStringLineLacksPrefix    {strLoc, violatingChars}            ->
         let
