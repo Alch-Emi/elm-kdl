@@ -705,12 +705,15 @@ linespace = oneOf
     , parseLineComment
     ]
 
-parseAstComment : Parser Context PProblem (a -> Maybe a)
-parseAstComment =
-    symbol (Token "/-" (PExpecting <| "node comment"))
-    |. star k () linespace
-    |> Parser.map (k (k Nothing))
-    |> optional Just
+parseAstComment : Bool -> Parser Context PProblem (a -> Maybe a)
+parseAstComment requireNodespaceIfAbsent = oneOf
+    [ (backtrackable <| star k () nodespace)
+        |. symbol (Token "/-" (PExpecting <| "node comment"))
+        |. star k () linespace
+        |> Parser.map (k (k Nothing))
+    , succeed Just
+        |. (if requireNodespaceIfAbsent then plus else star) k () nodespace
+    ]
     |> backtrackable
 
 mkNode
@@ -755,7 +758,7 @@ parseNode =
         mkChildBlock : Position -> List Node -> Position -> Document
         mkChildBlock start nodes end = (nodes, (start, end))
         children : Parser Context PProblem (Maybe Document)
-        children = parseAstComment |= (
+        children = parseAstComment False |= (
                 succeed mkChildBlock
                 |= getPosition
                 |. symbol (Token "{" <| PExpecting "children")
@@ -768,7 +771,7 @@ parseNode =
             )
             |> inContext WithinChildBlock
     in
-        parseAstComment
+        parseAstComment False
         |= (
             succeed mkNode
             |= getPosition
@@ -788,15 +791,10 @@ parseNode =
                 ]
             |= starL (
                 succeed identity
-                |. (plus k () nodespace |> backtrackable)
-                |= parseAstComment
+                |= parseAstComment True
                 |= parsePropOrArg
             )
-            |= starL (
-                succeed identity
-                |. (backtrackable (star k () nodespace))
-                |= children
-            )
+            |= starL children
             |. star k () nodespace
             |. nodeTerminator
             |= getPosition
