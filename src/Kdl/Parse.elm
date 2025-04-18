@@ -815,6 +815,7 @@ parseDocument =
         mkDocument start nodes end = (nodes, (start, end))
     in
         succeed mkDocument
+        |. (optional () <| Parser.token (Token "\u{feff}" (PExpecting "BOM")))
         |. parseVersion
         |= getPosition
         |= parseNodes
