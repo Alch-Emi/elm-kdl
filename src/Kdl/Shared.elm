@@ -27,13 +27,13 @@ unicodeSpace = Char.toCode >> flip member
     , 0x202F
     , 0x205F
     , 0x3000
-    , 0x000B
     ]
 
 unicodeNewline : Char -> Bool
 unicodeNewline = Char.toCode >> flip member
     [ 0x000D
     , 0x000A
+    , 0x000B
     , 0x0085
     , 0x000C
     , 0x2028
